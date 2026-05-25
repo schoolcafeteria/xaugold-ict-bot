@@ -195,8 +195,8 @@ def run_trading_cycle():
         return
 
     # 5. Ambil candle real-time (Timeframe 5M)
-    # Gunakan limit 300 dan range_val 300 agar EMA 200 terhitung secara valid
-    data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=300, range_val=300)
+    # Gunakan limit 1500 agar EMA 200 terhitung secara presisi dan sesuai dengan TradingView
+    data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=1500, range_val=1500)
     if 'error' in data:
         logger.error(f"Gagal mengambil candle dari TradingView: {data['error']}")
         return
@@ -569,7 +569,7 @@ def process_telegram_command(text):
 def get_live_market_data():
     """Helper: Ambil data pasar terkini dan analisis SMC."""
     try:
-        data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="1", limit=300, range_val=300)
+        data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=1500, range_val=1500)
         if 'error' in data or not data.get('candles'):
             return None
         candles = data['candles']

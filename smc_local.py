@@ -303,16 +303,23 @@ def analyze_smc(candles: List[Dict], swing_lookback: int = 5) -> Dict:
     recent_choch = choch_events[-1] if choch_events else None
 
     market_bias = 'neutral'
-    if recent_choch:
-        if recent_choch['type'] == 'choch_bullish':
-            market_bias = 'bullish'
-        elif recent_choch['type'] == 'choch_bearish':
-            market_bias = 'bearish'
+    # Tentukan event mana yang lebih baru
+    last_event_type = None
+    
+    if recent_choch and recent_bos:
+        if recent_choch['bar_index'] > recent_bos['bar_index']:
+            last_event_type = recent_choch['type']
+        else:
+            last_event_type = recent_bos['type']
+    elif recent_choch:
+        last_event_type = recent_choch['type']
     elif recent_bos:
-        if recent_bos['type'] == 'bos_bullish':
-            market_bias = 'bullish'
-        elif recent_bos['type'] == 'bos_bearish':
-            market_bias = 'bearish'
+        last_event_type = recent_bos['type']
+
+    if last_event_type in ('choch_bullish', 'bos_bullish'):
+        market_bias = 'bullish'
+    elif last_event_type in ('choch_bearish', 'bos_bearish'):
+        market_bias = 'bearish'
 
     return {
         'swing_highs': df[df['swing_high']].index.tolist(),

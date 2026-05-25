@@ -176,8 +176,8 @@ async function main() {
   try {
     // 1. Buat client TradingView dengan login sessionid & signature Anda
     client = new TradingView.Client({
-      token: '6p9v1mqxmpif447wp1cfsao9chxmje9t',
-      signature: 'v3:V5DSxlC7ySo7L85ysQiqjlbl5CY75L+jCvKSUs58Ess='
+      token: 'iu8zb3ipqe32ppvja6saf2vu8ki859gk',
+      signature: 'v3:MrpuUhiCjSBXW+SxPIrne6kpc2bOKBXWYJvxqg1gZcY='
     });
 
     // 2. Buat sesi chart
@@ -187,6 +187,7 @@ async function main() {
     const marketOpts = { timeframe: timeframe };
     if (rangeValue) marketOpts.range = rangeValue;
     if (toTimestamp) marketOpts.to = toTimestamp;
+    
     chart.setMarket(symbol, marketOpts);
 
     // 4. Tunggu data candle dimuat
