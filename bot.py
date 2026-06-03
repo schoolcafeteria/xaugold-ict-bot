@@ -187,7 +187,7 @@ def main():
     parser.add_argument('--from', type=str, default=None, dest='from_date', help='Tanggal awal data (YYYY-MM-DD, untuk mode MT5)')
     parser.add_argument('--range', type=int, default=None, dest='range_val', help='Jumlah bar yang diminta ke TradingView')
     parser.add_argument('--capital', type=float, default=1000.0, help='Modal awal untuk backtest')
-    parser.add_argument('--timeframe', type=str, default='1', choices=['1', '5'], help='Timeframe: 1 (M1) atau 5 (M5)')
+    parser.add_argument('--timeframe', type=str, default='5', choices=['1', '5'], help='Timeframe: 1 (M1) atau 5 (M5)')
     parser.add_argument('--source', type=str, default='mt5', choices=['mt5', 'tradingview'], help='Sumber data: mt5 (default) atau tradingview')
     parser.add_argument('--no-ema', action='store_true', dest='no_ema', help='Nonaktifkan filter EMA 200')
     parser.add_argument('--json', action='store_true', help='Output dalam format JSON mentah')

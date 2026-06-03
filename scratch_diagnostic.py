@@ -6,7 +6,7 @@ from smc_local import analyze_smc
 def diagnose_today():
     print("⏳ Mengambil data live 1M XAUUSD (350 candle terakhir)...")
     # Tarik 350 candle agar EMA 200 terisi penuh
-    data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="1", limit=350, range_val=350)
+    data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=500, range_val=500)
     
     if 'error' in data:
         print("❌ Error fetching data:", data['error'])

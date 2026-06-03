@@ -4,12 +4,12 @@ import json
 # Configuration Settings for XAUUSD SMC Bot
 
 # Telegram Settings
-TELEGRAM_BOT_TOKEN = "8878129888:AAE3DB7A5tQrYe-z61q4jy3i7o0e2rACr4A"
+TELEGRAM_BOT_TOKEN = "8906851032:AAHjlz2pXfaenrGfxHzlS2pXfO3MVEqRIJM"
 TELEGRAM_CHAT_ID = "776656619"
 
 # MetaTrader 5 Settings
 MT5_SYMBOL = "XAUUSDc"          # Sesuaikan dengan nama simbol di broker Anda (misal: GOLD, XAUUSD.micro, dll)
-MT5_MAGIC_NUMBER = 888200      # ID Unik transaksi bot SMC
+MT5_MAGIC_NUMBER = 888300      # ID Unik transaksi bot SMC (XAUGOLD 3 - M1)
 
 # Default values
 DEFAULT_LOT_SIZE = 0.01
@@ -55,5 +55,14 @@ MT5_LOT_SIZE = DEFAULT_LOT_SIZE
 DAILY_LOSS_LIMIT = DEFAULT_DAILY_LOSS_LIMIT
 
 # Trading Risk Settings (Dari Checkpoint 3)
-TRADING_START_HOUR = 8         # Jam 08:00 WIB
-TRADING_END_HOUR = 19          # Jam 19:00 WIB (Sinyal baru ditiadakan setelah jam 19.00)
+TRADING_START_HOUR = 8         # Jam 08:00 WIB (default)
+TRADING_END_HOUR = 19          # Jam 19:00 WIB (default)
+
+def get_trading_hours():
+    settings = load_settings()
+    start = int(settings.get("trading_start_hour", TRADING_START_HOUR))
+    end = int(settings.get("trading_end_hour", TRADING_END_HOUR))
+    return start, end
+
+def save_trading_hours(start, end):
+    return save_settings({"trading_start_hour": start, "trading_end_hour": end})

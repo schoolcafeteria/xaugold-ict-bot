@@ -53,12 +53,15 @@ def fetch_xauusd_data(
         if range_val:
             cmd.extend(['--range', str(range_val)])
 
+        # CREATE_NO_WINDOW mencegah CMD window muncul di Windows setiap kali fetch data
+        creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=60,
             cwd=str(PROJECT_DIR),
+            creationflags=creation_flags,
         )
 
         if result.returncode != 0:
@@ -86,7 +89,7 @@ def fetch_mt5_backtest_data(
     from_date: str,
     to_date: str,
     mt5_symbol: str = None,
-    timeframe: str = '1',
+    timeframe: str = '5',
 ) -> Dict:
     """
     Mengambil data candle historis langsung dari terminal MetaTrader 5.
@@ -95,7 +98,7 @@ def fetch_mt5_backtest_data(
         from_date: Tanggal mulai (format: YYYY-MM-DD)
         to_date: Tanggal akhir (format: YYYY-MM-DD)
         mt5_symbol: Simbol MT5 (default: ambil dari config.py)
-        timeframe: '1' untuk M1, '5' untuk M5
+        timeframe: '5' untuk M5, '1' untuk M1
 
     Returns:
         Dict berisi candles list dengan indikator (ema_200, rsi_14, atr_14)
@@ -156,7 +159,7 @@ def fetch_mt5_backtest_data(
         return {
             'meta': {
                 'symbol': mt5_symbol,
-                'timeframe': '1',
+                'timeframe': '5',
                 'source': 'metatrader5',
                 'candle_count': len(candles_list),
                 'from': from_date,
@@ -173,7 +176,7 @@ def fetch_mt5_backtest_data(
 
 def run_backtest_tool(
     symbol: str = 'FOREXCOM:XAUUSD',
-    timeframe: str = '1',
+    timeframe: str = '5',
     limit: int = 500,
     capital: float = 1000.0,
     swing_lookback: int = 3,
@@ -190,7 +193,7 @@ def run_backtest_tool(
 
     Args:
         symbol: Simbol TradingView (digunakan jika source='tradingview')
-        timeframe: Timeframe dalam menit (default: 1 untuk M1)
+        timeframe: Timeframe dalam menit (default: 5 untuk M5)
         limit: Jumlah candle historis (digunakan jika source='tradingview')
         capital: Modal awal (USD)
         swing_lookback: Sensitivitas swing point
@@ -248,7 +251,7 @@ def get_market_signal(
     Returns:
         Dict berisi sinyal Buy/Sell/Hold beserta alasan dan level SL/TP
     """
-    data = fetch_xauusd_data(symbol, timeframe, limit=200)
+    data = fetch_xauusd_data(symbol, timeframe, limit=1500, range_val=1500)
 
     if 'error' in data and not data.get('candles'):
         return {'signal': 'error', 'reason': data.get('error', 'Unknown error')}
@@ -339,7 +342,7 @@ TOOLS = [
             'properties': {
                 'timeframe': {
                     'type': 'string',
-                    'description': 'Timeframe dalam menit (contoh: "5", "15", "60")',
+                    'description': 'Timeframe dalam menit (contoh: "5", "1", "15", "60")',
                     'default': '5',
                 },
                 'limit': {

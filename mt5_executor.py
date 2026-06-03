@@ -3,7 +3,7 @@ import logging
 from config import MT5_SYMBOL, MT5_MAGIC_NUMBER, get_lot_size
 from telegram_notifier import send_telegram_notification
 
-logger = logging.getLogger("SMCBot.MT5")
+logger = logging.getLogger("ICTBot.MT5")
 
 def initialize_mt5():
     """
@@ -84,7 +84,7 @@ def open_trade(direction, entry_price, sl, tp, reason=""):
         "tp": tp,
         "deviation": 20,                  # Maksimal slippage deviasi dalam pips/points
         "magic": MT5_MAGIC_NUMBER,
-        "comment": "SMC Bot",
+        "comment": "ICT FVG Bot",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": filling,
     }
@@ -161,7 +161,7 @@ def close_position(position):
         "price": price,
         "deviation": 20,
         "magic": MT5_MAGIC_NUMBER,
-        "comment": "SMC Bot Close Manual",
+        "comment": "ICT FVG Bot Close Manual",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": position.type_filling if hasattr(position, 'type_filling') else mt5.ORDER_FILLING_FOK
     }
@@ -180,3 +180,48 @@ def close_position(position):
     logger.info(f"✅ Posisi #{position.ticket} berhasil ditutup secara manual pada harga {result.price}.")
     return True
 
+
+def modify_sl(position, new_sl):
+    """
+    Mengubah Stop Loss posisi aktif di MT5 (untuk Breakeven, Trailing, dll).
+    TP tetap dipertahankan.
+    
+    Args:
+        position: Position object dari MT5
+        new_sl: Harga SL baru
+    
+    Returns:
+        True jika berhasil, False jika gagal
+    """
+    if not initialize_mt5():
+        return False
+
+    symbol_info = get_symbol_info(position.symbol)
+    if symbol_info is None:
+        return False
+
+    digits = symbol_info.digits
+    new_sl = round(new_sl, digits)
+
+    request = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": position.symbol,
+        "position": position.ticket,
+        "sl": new_sl,
+        "tp": position.tp,  # Pertahankan TP yang sudah ada
+        "magic": MT5_MAGIC_NUMBER,
+    }
+
+    logger.info(f"Mengubah SL posisi #{position.ticket}: {position.sl} → {new_sl}")
+    result = mt5.order_send(request)
+
+    if result is None:
+        logger.error(f"Gagal mengubah SL posisi #{position.ticket}. Error: {mt5.last_error()}")
+        return False
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        logger.error(f"Modifikasi SL ditolak oleh broker. Retcode: {result.retcode}, Comment: {result.comment}")
+        return False
+
+    logger.info(f"✅ SL posisi #{position.ticket} berhasil diubah ke {new_sl}.")
+    return True

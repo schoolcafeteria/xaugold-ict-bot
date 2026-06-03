@@ -16,6 +16,123 @@ import pandas as pd
 from typing import List, Dict, Optional
 
 
+def aggregate_m1_to_m5(candles_m1: List[Dict]) -> List[Dict]:
+    """
+    Mengagregasi candle M1 menjadi M5 secara lokal.
+    
+    Mengelompokkan 5 candle M1 berurutan berdasarkan interval waktu 5 menit,
+    lalu menggabungkan OHLCV: Open dari candle pertama, High tertinggi,
+    Low terendah, Close dari candle terakhir, Volume total.
+    
+    Args:
+        candles_m1: List of M1 candle dicts (harus punya key: time, open, high, low, close, volume)
+    
+    Returns:
+        List of M5 candle dicts
+    """
+    if not candles_m1:
+        return []
+    
+    df = pd.DataFrame(candles_m1)
+    
+    # Pastikan kolom time ada dan numerik (Unix timestamp dalam detik)
+    if 'time' not in df.columns:
+        return []
+    
+    # Group per interval 5 menit (300 detik)
+    df['m5_group'] = (df['time'] // 300) * 300
+    
+    m5_candles = []
+    for group_time, group in df.groupby('m5_group', sort=True):
+        if len(group) == 0:
+            continue
+        m5_candles.append({
+            'time': int(group_time),
+            'open': group.iloc[0]['open'],
+            'high': group['high'].max(),
+            'low': group['low'].min(),
+            'close': group.iloc[-1]['close'],
+            'volume': group['volume'].sum() if 'volume' in group.columns else 0,
+        })
+    
+    return m5_candles
+
+
+def detect_fvg(candles_list: List[Dict], min_gap: float = 2.0, max_age: int = 200) -> List[Dict]:
+    """
+    Mendeteksi Fair Value Gap (FVG) dari data OHLC.
+
+    FVG = celah harga antara candle 1 dan candle 3 yang tidak tersentuh
+    oleh candle 2 (impulse candle). Market cenderung kembali mengisi
+    celah ini sebelum melanjutkan arah.
+
+    Bullish FVG: candle3.low > candle1.high (gap naik)
+    Bearish FVG: candle3.high < candle1.low (gap turun)
+
+    Args:
+        candles_list: List of candle dicts (time, open, high, low, close)
+        min_gap: Minimum gap size untuk filter FVG kecil (default: 2.0)
+        max_age: Maksimal umur FVG dalam jumlah candle (default: 50)
+
+    Returns:
+        List of active FVG dicts
+    """
+    fvgs = []
+    total_candles = len(candles_list)
+
+    for i in range(1, total_candles - 1):
+        c1 = candles_list[i - 1]
+        c2 = candles_list[i]
+        c3 = candles_list[i + 1]
+
+        # Bullish FVG: gap naik (harga naik kencang)
+        if c3['low'] > c1['high']:
+            gap = c3['low'] - c1['high']
+            if gap >= min_gap:
+                fvgs.append({
+                    'type': 'bullish_fvg',
+                    'high': c3['low'],      # Batas atas gap
+                    'low': c1['high'],       # Batas bawah gap
+                    'gap_size': gap,
+                    'time': c2.get('time', i),
+                    'bar_index': i,
+                    'filled': False,
+                })
+
+        # Bearish FVG: gap turun (harga turun kencang)
+        if c3['high'] < c1['low']:
+            gap = c1['low'] - c3['high']
+            if gap >= min_gap:
+                fvgs.append({
+                    'type': 'bearish_fvg',
+                    'high': c1['low'],       # Batas atas gap
+                    'low': c3['high'],        # Batas bawah gap
+                    'gap_size': gap,
+                    'time': c2.get('time', i),
+                    'bar_index': i,
+                    'filled': False,
+                })
+
+    # Cek apakah FVG sudah terisi (harga menyentuh = terisi)
+    for fvg in fvgs:
+        for j in range(fvg['bar_index'] + 2, total_candles):
+            c = candles_list[j]
+            if fvg['type'] == 'bullish_fvg' and c['low'] <= fvg['low']:
+                fvg['filled'] = True
+                break
+            elif fvg['type'] == 'bearish_fvg' and c['high'] >= fvg['high']:
+                fvg['filled'] = True
+                break
+
+    # Filter: hanya FVG aktif (belum terisi) dan dalam batas umur
+    active_fvgs = [
+        f for f in fvgs
+        if not f['filled'] and (total_candles - 1 - f['bar_index']) <= max_age
+    ]
+
+    return active_fvgs
+
+
 def detect_swing_points(df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
     """
     Mendeteksi Swing High dan Swing Low.
@@ -321,6 +438,9 @@ def analyze_smc(candles: List[Dict], swing_lookback: int = 5) -> Dict:
     elif last_event_type in ('choch_bearish', 'bos_bearish'):
         market_bias = 'bearish'
 
+    # 7. Deteksi FVG (Fair Value Gap)
+    active_fvgs = detect_fvg(candles, min_gap=2.0, max_age=200)
+
     return {
         'swing_highs': df[df['swing_high']].index.tolist(),
         'swing_lows': df[df['swing_low']].index.tolist(),
@@ -328,12 +448,14 @@ def analyze_smc(candles: List[Dict], swing_lookback: int = 5) -> Dict:
         'choch_events': choch_events,
         'order_blocks': order_blocks,
         'active_order_blocks': active_obs,
+        'active_fvgs': active_fvgs,
         'market_bias': market_bias,
         'summary': {
             'total_bos': len(bos_events),
             'total_choch': len(choch_events),
             'total_order_blocks': len(order_blocks),
             'active_order_blocks': len(active_obs),
+            'active_fvgs': len(active_fvgs),
             'current_bias': market_bias,
         }
     }

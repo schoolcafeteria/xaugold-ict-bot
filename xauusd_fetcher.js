@@ -18,7 +18,7 @@ const { RSI, EMA, SMA, MACD, ATR } = require('technicalindicators');
 // Konfigurasi default
 // ============================================================
 const DEFAULT_SYMBOL = 'FOREXCOM:XAUUSD';
-const DEFAULT_TIMEFRAME = '5';   // 5 menit
+const DEFAULT_TIMEFRAME = '1';   // 1 menit
 const DEFAULT_LIMIT = 200;
 const SMC_INDICATOR_ID = 'PUB;CnB3fSph'; // Smart Money Concepts [LuxAlgo]
 const TIMEOUT_MS = 30000; // 30 detik timeout
