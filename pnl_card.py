@@ -269,7 +269,7 @@ def generate_card_for_date(target_date=None, bg_theme='aurora'):
                 continue
 
             deal_time_utc = datetime.fromtimestamp(d.time, tz=timezone.utc)
-            deal_time_wib = deal_time_utc + timedelta(hours=7)
+            deal_time_wib = deal_time_utc + timedelta(hours=4)
             deal_date = deal_time_wib.strftime('%Y-%m-%d')
 
             if deal_time_wib.month != month or deal_time_wib.year != year:

@@ -60,9 +60,9 @@ def get_mt5_deals(year, month):
         if d.entry != 1:  # Hanya deal CLOSE (OUT)
             continue
 
-        # Konversi ke WIB (broker server biasanya UTC+3, WIB = UTC+7 → +4 jam)
+        # Konversi ke WIB (broker server biasanya UTC+3, WIB = UTC+7 → +4 jam dari broker time)
         deal_time_utc = datetime.fromtimestamp(d.time, tz=timezone.utc)
-        deal_time_wib = deal_time_utc + timedelta(hours=7)
+        deal_time_wib = deal_time_utc + timedelta(hours=4)
         deal_date = deal_time_wib.strftime('%Y-%m-%d')
 
         # Pastikan deal masuk ke bulan yang diminta
