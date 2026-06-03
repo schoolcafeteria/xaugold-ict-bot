@@ -48,7 +48,7 @@ def main():
     flask_proc = subprocess.Popen(
         [sys.executable, os.path.join(BASE_DIR, "pnl_server.py")],
         cwd=BASE_DIR,
-        creationflags=subprocess.CREATE_NEW_CONSOLE
+        creationflags=subprocess.CREATE_NO_WINDOW
     )
     time.sleep(3)
     print(f"      Flask PID: {flask_proc.pid}")
@@ -57,7 +57,7 @@ def main():
     print("\n[2/3] Starting ngrok tunnel...")
     ngrok_proc = subprocess.Popen(
         ["ngrok", "http", str(PORT)],
-        creationflags=subprocess.CREATE_NEW_CONSOLE
+        creationflags=subprocess.CREATE_NO_WINDOW
     )
     time.sleep(3)
 
