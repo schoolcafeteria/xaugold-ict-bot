@@ -18,14 +18,37 @@ CHAT_ID   = "776656619"
 PORT      = 5000
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
+# Absolute path to ngrok from WinGet
+NGROK_PATH = r"C:\Users\Mako by Seris\AppData\Local\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe"
+if not os.path.exists(NGROK_PATH):
+    NGROK_PATH = "ngrok" # fallback
+
+def wait_for_internet(timeout_secs=180):
+    """Tunggu sampai koneksi internet aktif (bisa ping Telegram API)"""
+    start_time = time.time()
+    while time.time() - start_time < timeout_secs:
+        try:
+            # Test connection to Telegram API
+            requests.get("https://api.telegram.org", timeout=5)
+            return True
+        except Exception:
+            time.sleep(3)
+    return False
+
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-    except Exception as e:
-        print(f"[Telegram Error] {e}")
+    # Retry sending telegram message up to 5 times
+    for i in range(5):
+        try:
+            res = requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+            if res.status_code == 200:
+                return True
+        except Exception as e:
+            print(f"[Telegram Error] Try {i+1}/5: {e}")
+        time.sleep(5)
+    return False
 
-def get_ngrok_url(retries=10, delay=2):
+def get_ngrok_url(retries=15, delay=2):
     for i in range(retries):
         try:
             res = requests.get("http://localhost:4040/api/tunnels", timeout=5)
@@ -43,7 +66,13 @@ def main():
     print("  Eleu Dashboard Startup")
     print("=" * 50)
 
-    # 1. Start Flask server
+    # 1. Tunggu internet koneksi dulu
+    print("Menunggu koneksi internet...")
+    if not wait_for_internet():
+        print("Koneksi internet tidak tersedia setelah 3 menit.")
+        return
+
+    # 2. Start Flask server
     print("\n[1/3] Starting pnl_server.py...")
     flask_proc = subprocess.Popen(
         [sys.executable, os.path.join(BASE_DIR, "pnl_server.py")],
@@ -53,15 +82,15 @@ def main():
     time.sleep(3)
     print(f"      Flask PID: {flask_proc.pid}")
 
-    # 2. Start ngrok
+    # 3. Start ngrok
     print("\n[2/3] Starting ngrok tunnel...")
     ngrok_proc = subprocess.Popen(
-        ["ngrok", "http", str(PORT)],
+        [NGROK_PATH, "http", str(PORT)],
         creationflags=subprocess.CREATE_NO_WINDOW
     )
     time.sleep(3)
 
-    # 3. Get public URL
+    # 4. Get public URL
     print("\n[3/3] Getting public URL...")
     url = get_ngrok_url()
 
