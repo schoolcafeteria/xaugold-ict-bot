@@ -3,8 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ICT Gold Bot — PnL Dashboard</title>
+    <title>Eleu — PnL Dashboard</title>
     <meta name="description" content="XAUUSD ICT Trading Bot P&L Calendar Dashboard">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -13,8 +15,8 @@
     <!-- Header -->
     <header id="main-header">
         <div class="header-left">
-            <span class="logo-icon">🥇</span>
-            <span class="logo-text">ICT Gold Bot</span>
+            <img src="/static/logo.png" alt="Eleu" class="logo-img">
+            <span class="logo-text">Eleu</span>
         </div>
         <div class="header-right">
             <span class="header-badge">XAUUSD</span>
@@ -107,6 +109,17 @@
                             <span class="swatch-name">Midnight</span>
                         </button>
                     </div>
+                    <div class="upload-row">
+                        <button class="upload-btn" id="upload-bg-btn" title="Upload image, GIF, or video">
+                            <span class="upload-icon">📁</span>
+                            <span>Upload image or video...</span>
+                        </button>
+                        <input type="file" id="bg-file-input" accept="image/*,.gif,video/mp4,video/webm,video/quicktime" hidden>
+                        <div class="upload-preview" id="upload-preview" style="display:none;">
+                            <img id="upload-thumb" alt="preview">
+                            <button class="upload-remove" id="upload-remove" title="Remove">✕</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="option-group">
@@ -124,20 +137,59 @@
                 <div class="option-group">
                     <label class="option-label">CURRENCY ON CARD</label>
                     <select id="currency-select" class="select-input">
-                        <option value="USD $">USD $</option>
+                        <option value="USD">USD $</option>
+                        <option value="IDR">IDR Rp</option>
                     </select>
+                </div>
+
+                <div class="option-group">
+                    <label class="option-label">FUN COMPARISON</label>
+                    <div class="fun-radios">
+                        <label class="radio-item">
+                            <input type="radio" name="fun-compare" value="bengbeng" data-name="Wafer Beng-Beng" data-price="2500">
+                            <span class="radio-label">Wafer Beng-Beng</span>
+                            <span class="radio-price">Rp2.500</span>
+                        </label>
+                        <label class="radio-item">
+                            <input type="radio" name="fun-compare" value="indomie" data-name="Indomie" data-price="3000">
+                            <span class="radio-label">Indomie</span>
+                            <span class="radio-price">Rp3.000</span>
+                        </label>
+                        <label class="radio-item">
+                            <input type="radio" name="fun-compare" value="kopi" data-name="Kopi" data-price="20000">
+                            <span class="radio-label">Kopi</span>
+                            <span class="radio-price">Rp20.000</span>
+                        </label>
+                        <label class="radio-item">
+                            <input type="radio" name="fun-compare" value="custom" data-name="" data-price="0">
+                            <span class="radio-label">Custom...</span>
+                        </label>
+                        <label class="radio-item">
+                            <input type="radio" name="fun-compare" value="none" checked>
+                            <span class="radio-label">None</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="option-group" id="custom-item-group" style="display:none;">
+                    <label class="option-label">CUSTOM ITEM</label>
+                    <input type="text" id="custom-item-name" class="text-input" placeholder="e.g. Es Teh">
+                    <input type="number" id="custom-item-price" class="text-input" placeholder="Price in IDR — e.g. 8500">
+                    <span class="checkbox-hint">Pick Custom... in fun comparison to enable.</span>
                 </div>
             </div>
 
             <!-- Card Preview -->
             <div class="share-preview-wrap">
                 <div class="share-card" id="share-card" data-bg="aurora">
+                    <video class="sc-video-bg" id="sc-video-bg" muted loop autoplay playsinline></video>
                     <div class="sc-header">
-                        <div class="sc-brand">🥇 ICT Gold Bot</div>
+                        <div class="sc-brand"><img src="/static/logo.png" alt="" class="sc-logo"> Eleu</div>
                         <div class="sc-date" id="sc-date">3rd June 2026</div>
                     </div>
                     <h3 class="sc-title" id="sc-title">PnL (June 3, 2026)</h3>
                     <div class="sc-pnl" id="sc-pnl">+$0.00</div>
+                    <div class="sc-comparison" id="sc-comparison" style="display:none;"></div>
                     <div class="sc-stats" id="sc-stats">
                         <div class="sc-stat">
                             <span class="sc-stat-label">Realized</span>
@@ -166,20 +218,25 @@
                 <span class="btn-icon">📋</span> Copy
             </button>
             <button class="action-btn primary" id="save-btn">
-                <span class="btn-icon">💾</span> Save PNG
+                <span class="btn-icon">💾</span> <span id="save-btn-text">Save PNG</span>
             </button>
         </div>
     </section>
 
     <!-- Footer -->
     <footer>
-        <span>ICT Gold Bot · XAUUSD FVG M5 Strategy</span>
+        <span>Eleu · XAUUSD Trading Dashboard</span>
     </footer>
 
     <!-- Toast notification -->
     <div class="toast" id="toast"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js"></script>
+    <script type="module">
+        import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.1.2';
+        window.gifuct = { parseGIF, decompressFrames };
+    </script>
+    <script src="/static/app.js" defer></script>
 </body>
 </html>

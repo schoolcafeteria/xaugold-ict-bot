@@ -149,7 +149,7 @@ def generate_pnl_card(
     y_cursor = PADDING
 
     # ---- Header: Brand (left) + Date (right) ----
-    draw.text((PADDING, y_cursor), "🥇 ICT Gold Bot", fill=white, font=font_lg)
+    draw.text((PADDING, y_cursor), "Eleu", fill=white, font=font_lg)
 
     # Format date
     try:
@@ -265,7 +265,7 @@ def generate_card_for_date(target_date=None, bg_theme='aurora'):
 
     if deals:
         for d in deals:
-            if d.entry != 1 or d.magic != MT5_MAGIC_NUMBER:
+            if d.entry != 1:
                 continue
 
             deal_time_utc = datetime.fromtimestamp(d.time, tz=timezone.utc)
@@ -289,8 +289,8 @@ def generate_card_for_date(target_date=None, bg_theme='aurora'):
     total = day_wins + day_losses
     wr = (day_wins / total * 100) if total > 0 else 0.0
 
-    # Floating
-    positions = mt5.positions_get(magic=MT5_MAGIC_NUMBER)
+    # Floating (semua posisi)
+    positions = mt5.positions_get()
     floating = sum(p.profit + p.swap + p.commission for p in positions) if positions else 0.0
 
     return generate_pnl_card(

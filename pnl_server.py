@@ -46,7 +46,7 @@ def get_mt5_deals(year, month):
     if deals is None:
         deals = []
 
-    # Process deals: filter by magic number, group by date WIB
+    # Process deals: semua trade (bot + manual), group by date WIB
     daily_pnl = {}
     total_wins = 0
     total_losses = 0
@@ -58,8 +58,6 @@ def get_mt5_deals(year, month):
 
     for d in deals:
         if d.entry != 1:  # Hanya deal CLOSE (OUT)
-            continue
-        if d.magic != MT5_MAGIC_NUMBER:
             continue
 
         # Konversi ke WIB (broker server biasanya UTC+3, WIB = UTC+7 → +4 jam)
@@ -111,10 +109,9 @@ def get_mt5_deals(year, month):
             'price': d.price,
         })
 
-    # Get floating P&L dari posisi aktif
+    # Get floating P&L dari semua posisi aktif
     try:
-        from config import MT5_MAGIC_NUMBER as magic
-        positions = mt5.positions_get(magic=magic)
+        positions = mt5.positions_get()
         floating = 0.0
         open_count = 0
         if positions:
@@ -210,6 +207,61 @@ def api_pnl_day():
         'pnl': day_data,
         'trades': day_trades,
         'summary': data['summary'],
+    })
+
+
+# =====================================================================
+# EXCHANGE RATE (Real-time)
+# =====================================================================
+
+_rate_cache = {
+    'rates': {},
+    'last_fetch': None,
+}
+_RATE_CACHE_TTL = 3600  # 1 jam
+
+
+def _fetch_exchange_rates():
+    """Fetch kurs dari free API, cache selama 1 jam."""
+    import time
+    now = time.time()
+
+    if _rate_cache['last_fetch'] and (now - _rate_cache['last_fetch']) < _RATE_CACHE_TTL:
+        return _rate_cache['rates']
+
+    try:
+        import requests
+        # Free API tanpa key
+        res = requests.get(
+            'https://open.er-api.com/v6/latest/USD',
+            timeout=5
+        )
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('result') == 'success':
+                _rate_cache['rates'] = data.get('rates', {})
+                _rate_cache['last_fetch'] = now
+                logger.info(f"💱 Exchange rates updated: USD/IDR = {_rate_cache['rates'].get('IDR', 'N/A')}")
+                return _rate_cache['rates']
+    except Exception as e:
+        logger.warning(f"Failed to fetch exchange rates: {e}")
+
+    # Fallback jika gagal fetch
+    if not _rate_cache['rates']:
+        _rate_cache['rates'] = {'IDR': 16500, 'USD': 1}
+    return _rate_cache['rates']
+
+
+@app.route('/api/rate')
+def api_rate():
+    """
+    API: Kurs real-time.
+    Returns JSON with exchange rates dari USD.
+    """
+    rates = _fetch_exchange_rates()
+    return jsonify({
+        'base': 'USD',
+        'IDR': rates.get('IDR', 16500),
     })
 
 
