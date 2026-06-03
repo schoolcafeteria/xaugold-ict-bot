@@ -18,8 +18,10 @@ from telegram_notifier import (
     send_telegram_notification,
     send_telegram_with_keyboard,
     edit_telegram_message,
-    answer_callback_query
+    answer_callback_query,
+    send_telegram_photo
 )
+from pnl_card import generate_card_for_date
 
 # Setup logging ke console dan file (dengan UTF-8 untuk support emoji di Windows)
 log_format = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
@@ -929,6 +931,38 @@ def process_telegram_command(text):
         else:
             send_telegram_notification("❌ *Tes Gagal:* Order ditolak oleh MT5/Broker. Periksa tab Journal di MT5 Anda untuk melihat alasannya.")
 
+    elif command == "/sharecard":
+        send_telegram_notification("⏳ *Generating PnL card...*")
+        
+        # Parse tanggal opsional: /sharecard atau /sharecard 2026-06-03
+        target_date = None
+        if len(parts) >= 2:
+            try:
+                target_date = datetime.strptime(parts[1], '%Y-%m-%d').date()
+            except ValueError:
+                send_telegram_notification("⚠️ *Format tanggal salah.* Gunakan: `/sharecard YYYY-MM-DD`\n_Contoh: /sharecard 2026-06-03_")
+                return
+        
+        try:
+            png_data = generate_card_for_date(target_date=target_date)
+            if png_data:
+                wib_now = datetime.now(timezone.utc) + timedelta(hours=7)
+                date_label = target_date.strftime('%d %B %Y') if target_date else wib_now.strftime('%d %B %Y')
+                send_telegram_photo(png_data, caption=f"📊 *PnL Card — {date_label}*")
+            else:
+                send_telegram_notification("❌ Gagal generate PnL card. Pastikan MT5 terhubung.")
+        except Exception as e:
+            logger.error(f"Error generating PnL card: {e}")
+            send_telegram_notification(f"❌ Error: {e}")
+
+    elif command == "/web":
+        send_telegram_notification(
+            "🌐 *PnL Dashboard*\n\n"
+            "Buka di browser:\n"
+            "`http://localhost:5000`\n\n"
+            "_Dashboard menampilkan PnL Calendar, summary, dan fitur Share Card._"
+        )
+
     elif command == "/close":
         send_telegram_notification("⏳ *Memeriksa posisi aktif untuk ditutup...*")
         active_pos = mt5_executor.check_active_positions()
@@ -1267,6 +1301,15 @@ def main():
     logger.info("🚀 MEMULAI AUTO-TRADING BOT XAUUSD ICT FVG (MT5)")
     logger.info("=========================================================")
     
+    # Jalankan PnL Dashboard web server di background thread
+    try:
+        from pnl_server import run_server
+        flask_thread = threading.Thread(target=run_server, daemon=True)
+        flask_thread.start()
+        logger.info("🌐 PnL Dashboard thread started on http://localhost:5000")
+    except Exception as e:
+        logger.warning(f"⚠️ PnL Dashboard gagal dimulai: {e}")
+
     # Jalankan background thread listener Telegram lebih dulu (bisa terima command walau MT5 belum nyala)
     listener_thread = threading.Thread(target=telegram_polling_thread, daemon=True)
     listener_thread.start()

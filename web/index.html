@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ICT Gold Bot — PnL Dashboard</title>
+    <meta name="description" content="XAUUSD ICT Trading Bot P&L Calendar Dashboard">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <!-- Header -->
+    <header id="main-header">
+        <div class="header-left">
+            <span class="logo-icon">🥇</span>
+            <span class="logo-text">ICT Gold Bot</span>
+        </div>
+        <div class="header-right">
+            <span class="header-badge">XAUUSD</span>
+            <span class="header-badge live">● LIVE</span>
+        </div>
+    </header>
+
+    <!-- Summary Cards -->
+    <section class="summary-cards" id="summary-cards">
+        <div class="stat-card" id="card-realized">
+            <span class="stat-label">REALIZED PNL</span>
+            <span class="stat-value" id="realized-value">$0.00</span>
+            <span class="stat-sub" id="realized-sub">this month</span>
+        </div>
+        <div class="stat-card" id="card-unrealized">
+            <span class="stat-label">UNREALIZED (OPEN)</span>
+            <span class="stat-value neutral" id="unrealized-value">$0.00</span>
+            <span class="stat-sub" id="unrealized-sub">0 open</span>
+        </div>
+        <div class="stat-card" id="card-trades">
+            <span class="stat-label">TOTAL TRADES</span>
+            <span class="stat-value neutral" id="trades-value">0</span>
+            <span class="stat-sub" id="trades-sub">W: 0 / L: 0</span>
+        </div>
+        <div class="stat-card" id="card-winrate">
+            <span class="stat-label">WIN RATE</span>
+            <span class="stat-value neutral" id="winrate-value">0%</span>
+            <span class="stat-sub" id="winrate-sub">—</span>
+        </div>
+    </section>
+
+    <!-- Calendar Section -->
+    <section class="calendar-section" id="calendar-section">
+        <div class="calendar-top">
+            <h2 class="section-title">REALIZED PNL CALENDAR</h2>
+            <div class="view-toggle">
+                <button class="view-btn active" data-view="month">Month</button>
+                <button class="view-btn" data-view="week">Week</button>
+                <button class="view-btn" data-view="year">Year</button>
+            </div>
+        </div>
+
+        <div class="month-navigator">
+            <div class="month-nav-left">
+                <button class="nav-arrow" id="prev-month">‹</button>
+                <h3 class="month-label" id="month-label">June 2026</h3>
+                <button class="nav-arrow" id="next-month">›</button>
+            </div>
+            <div class="month-nav-right">
+                <div class="monthly-summary">
+                    <span class="summary-label">Monthly PnL · <span id="monthly-closes">0</span> closes</span>
+                    <span class="summary-total" id="monthly-total">$0.00</span>
+                </div>
+                <button class="today-btn" id="today-btn">Today</button>
+            </div>
+        </div>
+
+        <div class="calendar-grid" id="calendar-grid">
+            <div class="day-header">Sun</div>
+            <div class="day-header">Mon</div>
+            <div class="day-header">Tue</div>
+            <div class="day-header">Wed</div>
+            <div class="day-header">Thu</div>
+            <div class="day-header">Fri</div>
+            <div class="day-header">Sat</div>
+            <!-- Day cells injected by JS -->
+        </div>
+    </section>
+
+    <!-- Share PnL Section -->
+    <section class="share-section" id="share-section">
+        <h2 class="section-title">SHARE YOUR PNL</h2>
+
+        <div class="share-layout">
+            <!-- Options Panel -->
+            <div class="share-options">
+                <div class="option-group">
+                    <label class="option-label">BACKGROUND</label>
+                    <div class="bg-swatches">
+                        <button class="swatch aurora active" data-bg="aurora" title="Aurora">
+                            <span class="swatch-name">Aurora</span>
+                        </button>
+                        <button class="swatch sunset" data-bg="sunset" title="Sunset">
+                            <span class="swatch-name">Sunset</span>
+                        </button>
+                        <button class="swatch forest" data-bg="forest" title="Forest">
+                            <span class="swatch-name">Forest</span>
+                        </button>
+                        <button class="swatch midnight" data-bg="midnight" title="Midnight">
+                            <span class="swatch-name">Midnight</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="option-group">
+                    <label class="option-label">CARD OPTIONS</label>
+                    <div class="card-options-btns">
+                        <button class="opt-btn" data-period="month" id="opt-month">Whole month</button>
+                        <button class="opt-btn active" data-period="day" id="opt-day">Single day</button>
+                    </div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="hide-details"> Hide details
+                        <span class="checkbox-hint">Hides Realized, Unrealized, Biggest Win, Win Rate.</span>
+                    </label>
+                </div>
+
+                <div class="option-group">
+                    <label class="option-label">CURRENCY ON CARD</label>
+                    <select id="currency-select" class="select-input">
+                        <option value="USD $">USD $</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Card Preview -->
+            <div class="share-preview-wrap">
+                <div class="share-card" id="share-card" data-bg="aurora">
+                    <div class="sc-header">
+                        <div class="sc-brand">🥇 ICT Gold Bot</div>
+                        <div class="sc-date" id="sc-date">3rd June 2026</div>
+                    </div>
+                    <h3 class="sc-title" id="sc-title">PnL (June 3, 2026)</h3>
+                    <div class="sc-pnl" id="sc-pnl">+$0.00</div>
+                    <div class="sc-stats" id="sc-stats">
+                        <div class="sc-stat">
+                            <span class="sc-stat-label">Realized</span>
+                            <span class="sc-stat-value" id="sc-realized">+$0.00</span>
+                        </div>
+                        <div class="sc-stat">
+                            <span class="sc-stat-label">Unrealized</span>
+                            <span class="sc-stat-value" id="sc-unrealized">$0.00</span>
+                        </div>
+                        <div class="sc-stat">
+                            <span class="sc-stat-label">Biggest Win</span>
+                            <span class="sc-stat-value" id="sc-biggest">+$0.00</span>
+                        </div>
+                        <div class="sc-stat">
+                            <span class="sc-stat-label">Win Rate</span>
+                            <span class="sc-stat-value" id="sc-winrate">0% · 0 closes</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="share-actions">
+            <button class="action-btn secondary" id="copy-btn">
+                <span class="btn-icon">📋</span> Copy
+            </button>
+            <button class="action-btn primary" id="save-btn">
+                <span class="btn-icon">💾</span> Save PNG
+            </button>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <span>ICT Gold Bot · XAUUSD FVG M5 Strategy</span>
+    </footer>
+
+    <!-- Toast notification -->
+    <div class="toast" id="toast"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

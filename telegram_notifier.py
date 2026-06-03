@@ -130,3 +130,44 @@ def answer_callback_query(callback_query_id, text=None):
         return True
     except Exception:
         return False
+
+
+def send_telegram_photo(photo_bytes, caption=None):
+    """
+    Mengirimkan gambar (PNG bytes) ke Telegram Chat ID yang dikonfigurasi.
+    
+    Args:
+        photo_bytes: bytes data gambar PNG
+        caption: Opsional, teks caption di bawah gambar (Markdown)
+    
+    Returns:
+        True jika berhasil, False jika gagal
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram Bot Token atau Chat ID belum dikonfigurasi.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+    }
+    if caption:
+        data["caption"] = caption
+        data["parse_mode"] = "Markdown"
+
+    files = {
+        "photo": ("pnl_card.png", photo_bytes, "image/png")
+    }
+
+    try:
+        response = requests.post(url, data=data, files=files, timeout=15)
+        if response.status_code == 200:
+            logger.info("PnL card berhasil dikirim ke Telegram.")
+            return True
+        else:
+            logger.error(f"Gagal mengirim foto Telegram: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error saat mengirim foto Telegram: {e}")
+        return False
