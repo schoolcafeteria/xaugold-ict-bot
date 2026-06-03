@@ -6,26 +6,40 @@ import requests
 from datetime import datetime, timezone, timedelta
 from config import (
     MT5_SYMBOL, 
-    TRADING_START_HOUR, TRADING_END_HOUR,
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     get_lot_size, save_lot_size,
-    get_daily_loss_limit, save_daily_loss_limit
+    get_daily_loss_limit, save_daily_loss_limit,
+    get_trading_hours, save_trading_hours
 )
 from tradingview_tool import fetch_xauusd_data
 from smc_local import analyze_smc
 import mt5_executor
-from telegram_notifier import send_telegram_notification
-
-# Setup logging ke console dan file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("live_trader.log", encoding="utf-8")
-    ]
+from telegram_notifier import (
+    send_telegram_notification,
+    send_telegram_with_keyboard,
+    edit_telegram_message,
+    answer_callback_query
 )
-logger = logging.getLogger("SMCBot.LiveTrader")
+
+# Setup logging ke console dan file (dengan UTF-8 untuk support emoji di Windows)
+log_format = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+log_formatter = logging.Formatter(log_format)
+
+# Console handler dengan UTF-8 encoding (fix emoji error di Windows cp1252)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(log_formatter)
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+# File handler sudah UTF-8
+file_handler = logging.FileHandler("live_trader.log", encoding="utf-8")
+file_handler.setFormatter(log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
+logger = logging.getLogger("ICTBot.LiveTrader")
 
 # State tracker harian
 state = {
@@ -34,15 +48,18 @@ state = {
     "processed_bars": set(),       # Bar timestamps yang sudah dianalisis entry-nya
     "last_closed_deal_ticket": 0,  # Melacak tiket transaksi terluar untuk hitung rugi
     "active_tickets": [],          # Menyimpan ID tiket posisi bot yang sedang berjalan
+    "paused": False,               # Pause entry baru via /pause, posisi aktif tetap dimonitor
 }
 
 def is_trading_hour():
     """
     Cek apakah waktu saat ini berada di dalam jam trading aktif (WIB).
+    Jam bisa diubah via /setjam di Telegram.
     """
     # Waktu UTC + 7 Jam = WIB
     wib_now = datetime.now(timezone.utc) + timedelta(hours=7)
-    return TRADING_START_HOUR <= wib_now.hour < TRADING_END_HOUR
+    start, end = get_trading_hours()
+    return start <= wib_now.hour < end
 
 def update_daily_losses():
     """
@@ -74,7 +91,7 @@ def update_daily_losses():
         # Cek apakah deal merupakan hasil close posisi (bukan opening deal)
         # Entry type: 0=Buy, 1=Sell. Exit/deal type: 1=Out (position close)
         if deal.entry == 1: # Deal entry OUT
-            deal_time = datetime.fromtimestamp(deal.time, tz=timezone.utc) + timedelta(hours=7)
+            deal_time = datetime.fromtimestamp(deal.time) - timedelta(hours=3)
             deal_date_str = deal_time.strftime('%Y-%m-%d')
             
             # Hanya hitung deal yang ditutup hari ini (WIB)
@@ -109,9 +126,10 @@ def monitor_closed_positions():
     for ticket in closed_tickets:
         logger.info(f"🔍 Mendeteksi tiket #{ticket} telah ditutup. Mengambil detail history...")
         
-        # Ambil history deals untuk mencari transaksi penutupan (OUT) untuk tiket ini
-        start_time = datetime.now() - timedelta(days=1)
-        history_deals = mt5_executor.mt5.history_deals_get(start_time, datetime.now())
+        # Ambil history deals dengan rentang waktu lebih lebar (2 hari + buffer ke depan)
+        start_time = datetime.now() - timedelta(days=2)
+        end_time = datetime.now() + timedelta(days=1)
+        history_deals = mt5_executor.mt5.history_deals_get(start_time, end_time)
         
         if not history_deals:
             logger.warning(f"Detail deal untuk tiket #{ticket} tidak ditemukan di history.")
@@ -119,16 +137,35 @@ def monitor_closed_positions():
                 state["active_tickets"].remove(ticket)
             continue
 
-        # Cari deal penutupan (entry == 1 (OUT)) yang terikat dengan posisi (position_id == ticket)
+        # Cari deal penutupan (entry == 1 (OUT)) yang terikat dengan posisi
         closing_deal = None
         for deal in history_deals:
-            if deal.position_id == ticket and deal.entry == 1:
+            # Cek berdasarkan position_id, order ticket, atau deal ticket
+            if deal.entry == 1 and (deal.position_id == ticket or deal.order == ticket or deal.ticket == ticket):
                 closing_deal = deal
                 break
 
         if closing_deal is None:
-            # Kadang deal penutupan masih diproses oleh broker. Kita coba lagi pada siklus berikutnya.
+            # Fallback: cari deal OUT terbaru dengan magic number bot dan simbol yang sama
+            for deal in reversed(list(history_deals)):
+                if deal.entry == 1 and deal.magic == mt5_executor.MT5_MAGIC_NUMBER:
+                    closing_deal = deal
+                    logger.info(f"Fallback: Ditemukan deal OUT magic={deal.magic} tiket={deal.ticket}")
+                    break
+
+        if closing_deal is None:
+            # Coba lagi pada siklus berikutnya, tapi hapus setelah 3 menit gagal
             logger.warning(f"Deal OUT untuk tiket posisi #{ticket} belum tercatat di history broker.")
+            # Hapus tiket jika sudah tidak ada di MT5 untuk mencegah loop stuck
+            if ticket in state["active_tickets"]:
+                state["active_tickets"].remove(ticket)
+                logger.info(f"Tiket #{ticket} dihapus dari tracking (posisi sudah tidak ada di MT5).")
+                send_telegram_notification(
+                    f"🔔 *POSISI DITUTUP*\\n\\n"
+                    f"🆔 Tiket: #{ticket}\\n"
+                    f"ℹ️ Posisi sudah tidak aktif di MT5.\\n"
+                    f"⚠️ Detail P/L tidak tersedia (deal history belum tercatat)."
+                )
             continue
 
         # Hitung keuntungan bersih (profit + swap + komisi)
@@ -149,9 +186,9 @@ def monitor_closed_positions():
         # Tentukan alasan penutupan (3=SL, 4=TP, 0=Manual)
         reason_code = closing_deal.reason
         status_str = "CLOSED MANUAL ⚪"
-        if reason_code == 3:
+        if reason_code == 4:
             status_str = "STOP LOSS (SL) 🔴"
-        elif reason_code == 4:
+        elif reason_code == 5:
             status_str = "TAKE PROFIT (TP) 🟢"
         
         profit_emoji = "🟢" if net_profit >= 0 else "🔴"
@@ -184,20 +221,27 @@ def run_trading_cycle():
 
     current_loss_limit = get_daily_loss_limit()
 
-    # 3. Cek filter Daily Loss Limit
+    # 3. Cek apakah bot sedang di-pause
+    if state["paused"]:
+        return
+
+    # 4. Cek filter Daily Loss Limit
     if state["daily_loss"] >= current_loss_limit:
         logger.warning(f"⚠️ Batas kerugian harian tercapai: ${state['daily_loss']} >= ${current_loss_limit}. Auto-trade dinonaktifkan untuk sisa hari ini.")
         return
 
-    # 4. Cek filter jam perdagangan WIB (08:00 - 19:00 WIB)
+    # 4. Cek filter jam perdagangan WIB
+    start_h, end_h = get_trading_hours()
     if not is_trading_hour():
-        logger.info("💤 Di luar jam perdagangan aktif (08:00 - 19:00 WIB). Menunggu...")
+        logger.info(f"💤 Di luar jam perdagangan aktif ({start_h:02d}:00 - {end_h:02d}:00 WIB). Menunggu...")
         return
 
-    # 5. Ambil candle real-time (Timeframe 5M)
-    # Gunakan limit 1500 agar EMA 200 terhitung secara presisi dan sesuai dengan TradingView
-    data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=1500, range_val=1500)
-    if 'error' in data:
+    # 5. Ambil candle real-time (Timeframe M5 langsung)
+    logger.info("Mengambil data candle M5 dari TradingView...")
+    data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=500, range_val=500)
+    
+    # Cek error, tapi tetap lanjut jika candle tersedia
+    if 'error' in data and not data.get('candles'):
         logger.error(f"Gagal mengambil candle dari TradingView: {data['error']}")
         return
 
@@ -206,6 +250,8 @@ def run_trading_cycle():
         logger.warning("Tidak ada data candle baru terdeteksi.")
         return
 
+    logger.info(f"Data candle diterima: {len(candles)} candle M5")
+
     latest_candle = candles[-1]
     candle_time = latest_candle.get('time')
 
@@ -213,18 +259,31 @@ def run_trading_cycle():
     if candle_time in state["processed_bars"]:
         return # Abaikan jika bar ini sudah kita periksa
 
-    # 6. Hitung analisis SMC dan Indikator lokal
-    smc = analyze_smc(candles)
-    market_bias = smc.get('market_bias', 'neutral')
-    active_obs = smc.get('active_order_blocks', [])
-    
+    # 6. Hitung analisis ICT pada M5
+    if len(candles) < 30:
+        logger.warning(f"Data M5 tidak cukup ({len(candles)} candle), skip siklus ini.")
+        return
+
+    smc_m5 = analyze_smc(candles)
+    market_bias = smc_m5.get('market_bias', 'neutral')
+    active_fvgs = smc_m5.get('active_fvgs', [])
+
     rsi = latest_candle.get('rsi_14')
     ema_200 = latest_candle.get('ema_200')
-    atr = latest_candle.get('atr_14')
     current_price = latest_candle['close']
 
-    if not atr or not ema_200:
-        return # Data indikator awal belum siap
+    # ATR M5 dari TradingView (sudah built-in), fallback ke manual
+    atr_m5 = latest_candle.get('atr_14')
+    if not atr_m5 and len(candles) >= 14:
+        recent_ranges = [c['high'] - c['low'] for c in candles[-14:]]
+        atr_m5 = sum(recent_ranges) / len(recent_ranges)
+
+    atr_m5_str = f"{atr_m5:.2f}" if atr_m5 else "N/A"
+    logger.info(f"[SCAN] Harga={current_price:.2f} | M5_Bias={market_bias} | RSI={rsi} | EMA200={ema_200} | ATR_M5={atr_m5_str} | FVG_aktif={len(active_fvgs)} | M5_candles={len(candles)}")
+
+    if not atr_m5:
+        logger.warning("Data ATR M5 belum siap, skip siklus ini.")
+        return
 
     # 7. Cek apakah ada posisi aktif berjalan yang dibuka bot
     active_positions = mt5_executor.check_active_positions()
@@ -233,7 +292,6 @@ def run_trading_cycle():
         state["processed_bars"].add(candle_time)
         
         # Sinkronisasi tiket aktif jika ada tiket baru di MT5 yang belum terdaftar di state
-        # (Misal setelah bot direstart saat ada posisi berjalan)
         for pos in active_positions:
             if pos.ticket not in state["active_tickets"]:
                 state["active_tickets"].append(pos.ticket)
@@ -241,46 +299,45 @@ def run_trading_cycle():
                 
         return
 
-    # 8. Evaluasi Aturan Entry (Checkpoint 3)
+    # 8. Evaluasi Aturan Entry — FVG M5
     entry_direction = None
     sl_level = 0.0
     tp_level = 0.0
     reason_msg = ""
 
-    for ob in active_obs:
-        # Poin 1: Bullish OB Retest + Bias Bullish/Neutral + Filter EMA 200
-        if ob['type'] == 'bullish_ob' and market_bias in ('bullish', 'neutral'):
-            # Retest zone check
-            if latest_candle['low'] <= ob['high'] and latest_candle['close'] > ob['low']:
-                # Filter Trend EMA 200: BUY hanya jika harga di atas EMA 200
-                if ema_200 and current_price < ema_200:
-                    continue
-                # Filter RSI Overbought
-                if rsi and rsi > 70:
-                    continue
-                
-                entry_direction = 'buy'
-                sl_level = ob['low'] - (atr * 1.0) # SL 1.0x ATR
-                tp_level = current_price + (atr * 2.0) # TP 2.0x ATR
-                reason_msg = f"Bullish OB retest (bias={market_bias})"
-                break
+    candle_low = latest_candle['low']
+    candle_high = latest_candle['high']
 
-        # Poin 2: Bearish OB Retest + Bias Bearish/Neutral + Filter EMA 200
-        elif ob['type'] == 'bearish_ob' and market_bias in ('bearish', 'neutral'):
-            # Retest zone check
-            if latest_candle['high'] >= ob['low'] and latest_candle['close'] < ob['high']:
-                # Filter Trend EMA 200: SELL hanya jika harga di bawah EMA 200
-                if ema_200 and current_price > ema_200:
-                    continue
-                # Filter RSI Oversold
-                if rsi and rsi < 30:
-                    continue
-                
-                entry_direction = 'sell'
-                sl_level = ob['high'] + (atr * 1.0) # SL 1.0x ATR
-                tp_level = current_price - (atr * 2.0) # TP 2.0x ATR
-                reason_msg = f"Bearish OB retest (bias={market_bias})"
+    for fvg in active_fvgs:
+        # Bullish FVG (BUY) — hanya jika bias bullish
+        if fvg['type'] == 'bullish_fvg' and market_bias == 'bullish':
+            # Entry saat candle MENYENTUH zona FVG (high/low overlap dengan zona)
+            touched = candle_low <= fvg['high'] and candle_high >= fvg['low']
+            if touched:
+                entry_direction = 'buy'
+                sl_level = fvg['low'] - max(atr_m5 * 0.5, 2.0)  # Min buffer 2.0 poin
+                risk = current_price - sl_level
+                tp_level = current_price + (risk * 2.0)
+                reason_msg = f"Bullish FVG M5 ({fvg['low']:.2f}-{fvg['high']:.2f}, gap={fvg['gap_size']:.2f}, bias={market_bias})"
+                logger.info(f"[FVG ENTRY] {reason_msg} | Entry={current_price:.2f} SL={sl_level:.2f} TP={tp_level:.2f} R:R=1:2.0")
                 break
+            else:
+                logger.info(f"[FVG SKIP] Bullish FVG {fvg['low']:.2f}-{fvg['high']:.2f} | Harga {current_price:.2f} belum menyentuh zona")
+
+        # Bearish FVG (SELL) — hanya jika bias bearish
+        elif fvg['type'] == 'bearish_fvg' and market_bias == 'bearish':
+            # Entry saat candle MENYENTUH zona FVG (high/low overlap dengan zona)
+            touched = candle_low <= fvg['high'] and candle_high >= fvg['low']
+            if touched:
+                entry_direction = 'sell'
+                sl_level = fvg['high'] + max(atr_m5 * 0.5, 2.0)  # Min buffer 2.0 poin
+                risk = sl_level - current_price
+                tp_level = current_price - (risk * 2.0)
+                reason_msg = f"Bearish FVG M5 ({fvg['low']:.2f}-{fvg['high']:.2f}, gap={fvg['gap_size']:.2f}, bias={market_bias})"
+                logger.info(f"[FVG ENTRY] {reason_msg} | Entry={current_price:.2f} SL={sl_level:.2f} TP={tp_level:.2f} R:R=1:2.0")
+                break
+            else:
+                logger.info(f"[FVG SKIP] Bearish FVG {fvg['low']:.2f}-{fvg['high']:.2f} | Harga {current_price:.2f} belum menyentuh zona")
 
     # 9. Kirim order ke MetaTrader 5
     if entry_direction:
@@ -294,8 +351,11 @@ def run_trading_cycle():
         )
         if order_res:
             logger.info("Order otomatis berhasil dipasang di MT5.")
-            # Gunakan order_res.position (Position Ticket) bukannya order_res.order (Order Ticket)
-            state["active_tickets"].append(order_res.position)
+            # Ambil position ticket (bisa .position atau .order tergantung versi MT5)
+            ticket = getattr(order_res, 'position', None) or getattr(order_res, 'order', None) or getattr(order_res, 'deal', None)
+            if ticket:
+                state["active_tickets"].append(ticket)
+                logger.info(f"Ticket #{ticket} ditambahkan ke active_tickets.")
         
     state["processed_bars"].add(candle_time)
 
@@ -307,6 +367,7 @@ def run_trading_cycle():
 def telegram_polling_thread():
     """
     Fungsi loop background untuk menerima dan merespon command Telegram.
+    Mendukung pesan teks biasa dan callback query dari inline keyboard.
     """
     logger.info("📨 Background Telegram Listener aktif.")
     offset = 0
@@ -324,6 +385,20 @@ def telegram_polling_thread():
             updates = response.json().get("result", [])
             for update in updates:
                 offset = update["update_id"] + 1
+                
+                # Handle callback query (tombol inline keyboard ditekan)
+                callback_query = update.get("callback_query")
+                if callback_query:
+                    cb_chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", ""))
+                    if cb_chat_id == TELEGRAM_CHAT_ID:
+                        cb_data = callback_query.get("data", "")
+                        cb_id = callback_query.get("id")
+                        msg_id = callback_query.get("message", {}).get("message_id")
+                        logger.info(f"Callback Telegram diterima: '{cb_data}'")
+                        process_callback(cb_data, cb_id, msg_id)
+                    continue
+                
+                # Handle pesan teks biasa
                 message = update.get("message", {})
                 chat_id = str(message.get("chat", {}).get("id", ""))
                 text = message.get("text", "").strip()
@@ -341,6 +416,163 @@ def telegram_polling_thread():
             
         time.sleep(1)
 
+
+# =====================================================================
+# INLINE KEYBOARD MENU SYSTEM
+# =====================================================================
+
+def build_main_menu_keyboard():
+    """Membangun layout keyboard utama."""
+    pause_btn = {"text": "▶️ Resume", "callback_data": "act_resume"} if state["paused"] else {"text": "⏸️ Pause", "callback_data": "act_pause"}
+    
+    return [
+        [{"text": "📊 Status", "callback_data": "act_status"}, {"text": "💰 P&L Hari Ini", "callback_data": "act_pnl"}],
+        [{"text": "🔍 Kondisi Market", "callback_data": "act_market"}, {"text": "📋 Journal", "callback_data": "act_journal"}],
+        [pause_btn, {"text": "⚖️ Breakeven", "callback_data": "act_be"}],
+        [{"text": "🛑 Close All", "callback_data": "confirm_close"}, {"text": "⚙️ Settings", "callback_data": "sub_settings"}],
+    ]
+
+def build_settings_keyboard():
+    """Membangun layout keyboard settings."""
+    return [
+        [{"text": f"📦 Lot: {get_lot_size():.3f}", "callback_data": "info_lot"}, {"text": f"🛑 Loss: ${get_daily_loss_limit():.0f}", "callback_data": "info_loss"}],
+        [{"text": f"⏰ Jam: {get_trading_hours()[0]:02d}:00-{get_trading_hours()[1]:02d}:00", "callback_data": "info_jam"}],
+        [{"text": "🔙 Kembali", "callback_data": "back_main"}],
+    ]
+
+def send_main_menu():
+    """Kirim menu utama sebagai pesan baru."""
+    pause_status = "⏸️ PAUSED" if state["paused"] else "🟢 AKTIF" if is_trading_hour() else "💤 STANDBY"
+    msg = (
+        f"🤖 *ICT Gold Bot — Menu Utama*\n\n"
+        f"📡 Status: *{pause_status}*\n"
+        f"Pilih menu di bawah:"
+    )
+    return send_telegram_with_keyboard(msg, build_main_menu_keyboard())
+
+
+def process_callback(cb_data, cb_id, msg_id):
+    """
+    Router untuk semua callback dari inline keyboard.
+    """
+    # --- Navigasi Menu ---
+    if cb_data == "back_main":
+        answer_callback_query(cb_id)
+        pause_status = "⏸️ PAUSED" if state["paused"] else "🟢 AKTIF" if is_trading_hour() else "💤 STANDBY"
+        edit_telegram_message(
+            msg_id,
+            f"🤖 *ICT Gold Bot — Menu Utama*\n\n📡 Status: *{pause_status}*\nPilih menu di bawah:",
+            build_main_menu_keyboard()
+        )
+        return
+
+    if cb_data == "sub_settings":
+        answer_callback_query(cb_id)
+        edit_telegram_message(
+            msg_id,
+            "⚙️ *SETTINGS*\n\n"
+            "Pengaturan saat ini ditampilkan di tombol.\n"
+            "Untuk mengubah, ketik perintah:\n\n"
+            "• `/setlot 0.05` — ubah lot\n"
+            "• `/setloss 15` — ubah batas rugi\n"
+            "• `/setjam 8 22` — ubah jam trading",
+            build_settings_keyboard()
+        )
+        return
+
+    # --- Info buttons (hanya tampil notif kecil) ---
+    if cb_data == "info_lot":
+        answer_callback_query(cb_id, f"Lot saat ini: {get_lot_size():.3f}. Ketik /setlot untuk ubah.")
+        return
+    if cb_data == "info_loss":
+        answer_callback_query(cb_id, f"Loss limit: ${get_daily_loss_limit():.2f}. Ketik /setloss untuk ubah.")
+        return
+    if cb_data == "info_jam":
+        s, e = get_trading_hours()
+        answer_callback_query(cb_id, f"Jam trading: {s:02d}:00-{e:02d}:00 WIB. Ketik /setjam untuk ubah.")
+        return
+
+    # --- Action buttons ---
+    if cb_data == "act_status":
+        answer_callback_query(cb_id, "📊 Mengambil status...")
+        process_telegram_command("/status")
+        return
+
+    if cb_data == "act_pnl":
+        answer_callback_query(cb_id, "💰 Menghitung P&L...")
+        handle_interactive_question("profit hari ini")
+        return
+
+    if cb_data == "act_market":
+        answer_callback_query(cb_id, "🔍 Menganalisis market...")
+        answer_market_condition()
+        return
+
+    if cb_data == "act_journal":
+        answer_callback_query(cb_id, "📋 Mengambil jurnal...")
+        process_telegram_command("/journal")
+        return
+
+    if cb_data == "act_be":
+        answer_callback_query(cb_id, "⚖️ Memproses breakeven...")
+        process_telegram_command("/be")
+        return
+
+    if cb_data == "act_pause":
+        answer_callback_query(cb_id, "⏸️ Bot di-pause!")
+        state["paused"] = True
+        logger.info("Bot di-PAUSE via menu Telegram.")
+        edit_telegram_message(
+            msg_id,
+            "⏸️ *BOT TRADING DI-PAUSE!*\n\n"
+            "🔹 Entry baru: *DIHENTIKAN*\n"
+            "🔹 Posisi aktif: *Tetap dimonitor*\n"
+            "🔹 Notifikasi TP/SL: *Tetap aktif*",
+            build_main_menu_keyboard()
+        )
+        return
+
+    if cb_data == "act_resume":
+        answer_callback_query(cb_id, "▶️ Bot dilanjutkan!")
+        state["paused"] = False
+        logger.info("Bot di-RESUME via menu Telegram.")
+        edit_telegram_message(
+            msg_id,
+            "▶️ *BOT TRADING DILANJUTKAN!*\n\n"
+            "🟢 Entry baru: *AKTIF*\n"
+            "🟢 Scanning sinyal FVG M5 kembali berjalan.",
+            build_main_menu_keyboard()
+        )
+        return
+
+    # --- Close dengan konfirmasi ---
+    if cb_data == "confirm_close":
+        active_pos = mt5_executor.check_active_positions()
+        if not active_pos:
+            answer_callback_query(cb_id, "Tidak ada posisi aktif.")
+            return
+        answer_callback_query(cb_id)
+        edit_telegram_message(
+            msg_id,
+            f"⚠️ *KONFIRMASI CLOSE ALL*\n\n"
+            f"Ada *{len(active_pos)}* posisi aktif.\n"
+            f"Yakin ingin menutup semua posisi?",
+            [
+                [{"text": "✅ Ya, Tutup Semua", "callback_data": "do_close"}, {"text": "❌ Batal", "callback_data": "back_main"}]
+            ]
+        )
+        return
+
+    if cb_data == "do_close":
+        answer_callback_query(cb_id, "🛑 Menutup posisi...")
+        edit_telegram_message(msg_id, "⏳ *Menutup semua posisi...*", None)
+        process_telegram_command("/close")
+        return
+
+    # Fallback
+    answer_callback_query(cb_id, "Perintah tidak dikenal.")
+
+
 def process_telegram_command(text):
     """
     Memproses dan merespon command dari pengguna.
@@ -348,26 +580,31 @@ def process_telegram_command(text):
     parts = text.split()
     command = parts[0].lower()
     
-    if command == "/help" or command == "/start":
+    if command == "/help" or command == "/start" or command == "/menu":
+        send_main_menu()
+        return
+
+    if command == "/help_text":
         help_msg = (
-            "🤖 *Menu Perintah SMC Gold Bot:*\n\n"
+            "🤖 *Menu Perintah ICT Gold Bot:*\n\n"
             "*📋 Perintah:*\n"
+            "💬 `/menu` - Menu interaktif (tombol)\n"
             "💬 `/status` - Info live, modal, status bot\n"
+            "💬 `/pause` - Pause entry baru\n"
+            "💬 `/resume` - Resume trading\n"
             "💬 `/setlot <angka>` - Setel lot trading\n"
             "💬 `/setloss <angka>` - Setel batas rugi harian\n"
+            "💬 `/setjam <mulai> <selesai>` - Atur jam trading\n"
             "💬 `/journal` - 5 transaksi terakhir\n"
-            "💬 `/close` - Tutup manual semua posisi bot yang sedang berjalan\n"
-            "💬 `/testtrade` - Uji coba order ke MT5\n"
-            "💬 `/help` - Menu bantuan ini\n\n"
+            "💬 `/close` - Tutup manual semua posisi\n"
+            "💬 `/help` - Menu ini\n\n"
             "*💡 Pertanyaan Interaktif (ketik langsung):*\n"
             "• _kondisi market?_\n"
-            "• _order block dimana?_\n"
-            "• _kapan bisa entry?_\n"
             "• _profit hari ini?_\n"
             "• _harga sekarang?_"
         )
         send_telegram_notification(help_msg)
-        
+    
     elif command == "/status":
         # Ambil status akun MT5
         account_info = None
@@ -377,21 +614,159 @@ def process_telegram_command(text):
         balance = f"${account_info.balance:.2f}" if account_info else "N/A"
         equity = f"${account_info.equity:.2f}" if account_info else "N/A"
         
-        # Cek jam aktif
-        trading_status = "🟢 AKTIF" if is_trading_hour() else "💤 STANDBY"
+        # Cek jam aktif & pause
+        if state["paused"]:
+            trading_status = "⏸️ PAUSED"
+        elif is_trading_hour():
+            trading_status = "🟢 AKTIF"
+        else:
+            trading_status = "💤 STANDBY"
         
+        start_h, end_h = get_trading_hours()
         status_msg = (
-            f"📊 *STATUS LIVE BOT SMC:*\n\n"
+            f"📊 *STATUS LIVE BOT ICT FVG:*\n\n"
             f"👤 *Akun Broker:* {account_info.login if account_info else 'N/A'}\n"
             f"💰 *Balance:* {balance}\n"
             f"💵 *Equity:* {equity}\n"
             f"⚙️ *Lot Size Saat Ini:* `{get_lot_size():.3f} lot`\n"
             f"🛑 *Batas Daily Loss:* ${get_daily_loss_limit():.2f}\n"
             f"📉 *Total Loss Hari Ini:* ${state['daily_loss']}\n"
-            f"⏱️ *Status Jam Trading:* {trading_status} (08:00 - 19:00 WIB)"
+            f"⏱️ *Status Trading:* {trading_status} ({start_h:02d}:00 - {end_h:02d}:00 WIB)"
         )
         send_telegram_notification(status_msg)
         
+    elif command == "/pause":
+        if state["paused"]:
+            send_telegram_notification("⏸️ Bot sudah dalam status *PAUSED*. Ketik `/resume` untuk melanjutkan.")
+        else:
+            state["paused"] = True
+            logger.info("Bot di-PAUSE via Telegram.")
+            send_telegram_notification(
+                "⏸️ *BOT TRADING DI-PAUSE!*\n\n"
+                "🔹 Entry baru: *DIHENTIKAN*\n"
+                "🔹 Posisi aktif: *Tetap dimonitor*\n"
+                "🔹 Notifikasi TP/SL: *Tetap aktif*\n\n"
+                "Ketik `/resume` untuk melanjutkan trading."
+            )
+
+    elif command == "/resume":
+        if not state["paused"]:
+            send_telegram_notification("🟢 Bot sudah dalam status *AKTIF*. Tidak perlu resume.")
+        else:
+            state["paused"] = False
+            logger.info("Bot di-RESUME via Telegram.")
+            send_telegram_notification(
+                "▶️ *BOT TRADING DILANJUTKAN!*\n\n"
+                "🟢 Entry baru: *AKTIF*\n"
+                "🟢 Scanning sinyal FVG M5 kembali berjalan."
+            )
+
+    elif command == "/pnl":
+        if not mt5_executor.initialize_mt5():
+            send_telegram_notification("❌ Gagal terhubung ke MT5.")
+            return
+        
+        from config import MT5_MAGIC_NUMBER
+        wib_now = datetime.now(timezone.utc) + timedelta(hours=7)
+        date_str = wib_now.strftime('%Y-%m-%d')
+        
+        start_date = datetime.now() - timedelta(days=1)
+        end_date = datetime.now() + timedelta(days=1)
+        deals = mt5_executor.mt5.history_deals_get(start_date, end_date)
+        
+        if not deals:
+            send_telegram_notification("📂 *P&L Hari Ini:* Belum ada transaksi.")
+            return
+        
+        # Filter deal close hari ini dari bot
+        wins, losses, total_profit = 0, 0, 0.0
+        for d in deals:
+            if d.entry == 1 and d.magic == MT5_MAGIC_NUMBER:
+                deal_time = datetime.fromtimestamp(d.time) - timedelta(hours=3)
+                if deal_time.strftime('%Y-%m-%d') == date_str:
+                    pnl = d.profit + d.swap + d.commission
+                    total_profit += pnl
+                    if pnl >= 0:
+                        wins += 1
+                    else:
+                        losses += 1
+        
+        total_trades = wins + losses
+        if total_trades == 0:
+            send_telegram_notification("📂 *P&L Hari Ini:* Belum ada trade yang ditutup hari ini.")
+            return
+        
+        winrate = (wins / total_trades * 100) if total_trades > 0 else 0
+        profit_emoji = "🟢" if total_profit >= 0 else "🔴"
+        sign = "+" if total_profit >= 0 else ""
+        
+        # Posisi aktif saat ini
+        active_pos = mt5_executor.check_active_positions()
+        floating = sum(p.profit + p.swap + p.commission for p in active_pos) if active_pos else 0.0
+        floating_str = f"+${floating:.2f}" if floating >= 0 else f"-${abs(floating):.2f}"
+        
+        msg = (
+            f"💰 *P&L HARI INI ({date_str}):*\n\n"
+            f"📊 *Total Trade:* {total_trades}\n"
+            f"🟢 *Win:* {wins} | 🔴 *Loss:* {losses}\n"
+            f"🎯 *Win Rate:* {winrate:.0f}%\n\n"
+            f"{profit_emoji} *Net P&L:* `{sign}${total_profit:.2f}`\n"
+            f"📈 *Floating:* `{floating_str}` ({len(active_pos)} posisi aktif)"
+        )
+        send_telegram_notification(msg)
+
+    elif command == "/be":
+        active_pos = mt5_executor.check_active_positions()
+        
+        if not active_pos:
+            send_telegram_notification("📂 *Tidak ada posisi aktif* untuk di-breakeven.")
+            return
+        
+        success_count = 0
+        for pos in active_pos:
+            direction = "BUY" if pos.type == 0 else "SELL"
+            entry_price = pos.price_open
+            current_price = pos.price_current
+            
+            # Cek apakah posisi sudah profit (layak BE)
+            is_profit = (current_price > entry_price) if pos.type == 0 else (current_price < entry_price)
+            
+            if not is_profit:
+                pnl = pos.profit + pos.swap + pos.commission
+                send_telegram_notification(
+                    f"⚠️ Posisi #{pos.ticket} ({direction}) belum profit.\n"
+                    f"Entry: {entry_price} | Now: {current_price} | P/L: ${pnl:.2f}\n"
+                    f"BE hanya bisa dilakukan saat posisi sudah profit."
+                )
+                continue
+            
+            # SL sudah di BE atau lebih baik?
+            if pos.type == 0 and pos.sl >= entry_price:  # BUY
+                send_telegram_notification(f"ℹ️ Posisi #{pos.ticket} ({direction}) SL sudah di BE atau lebih baik ({pos.sl}).")
+                continue
+            elif pos.type == 1 and pos.sl > 0 and pos.sl <= entry_price:  # SELL
+                send_telegram_notification(f"ℹ️ Posisi #{pos.ticket} ({direction}) SL sudah di BE atau lebih baik ({pos.sl}).")
+                continue
+            
+            # Geser SL ke entry price (breakeven)
+            if mt5_executor.modify_sl(pos, entry_price):
+                success_count += 1
+                pnl = pos.profit + pos.swap + pos.commission
+                send_telegram_notification(
+                    f"⚖️ *BREAKEVEN BERHASIL!*\n\n"
+                    f"🆔 *Tiket:* #{pos.ticket}\n"
+                    f"📈 *Arah:* {direction}\n"
+                    f"💵 *Entry:* {entry_price}\n"
+                    f"🛑 *SL Lama:* {pos.sl}\n"
+                    f"✅ *SL Baru:* {entry_price} (BE)\n"
+                    f"📊 *Floating P/L:* ${pnl:.2f}"
+                )
+            else:
+                send_telegram_notification(f"❌ Gagal mengubah SL posisi #{pos.ticket}. Cek MT5.")
+        
+        if success_count == 0 and active_pos:
+            logger.info("Tidak ada posisi yang bisa di-breakeven.")
+
     elif command == "/setlot":
         if len(parts) < 2:
             send_telegram_notification("⚠️ *Format salah.* Gunakan: `/setlot <ukuran_lot>`\n_Contoh: /setlot 0.02_")
@@ -430,42 +805,88 @@ def process_telegram_command(text):
         except ValueError:
             send_telegram_notification("⚠️ *Format salah.* Harus berupa angka desimal.\n_Contoh: /setloss 15.0_")
 
+    elif command == "/setjam":
+        if not parts or len(parts) < 2:
+            start_h, end_h = get_trading_hours()
+            send_telegram_notification(
+                f"⏰ *JAM TRADING SAAT INI:*\n"
+                f"▪️ Mulai: `{start_h:02d}:00` WIB\n"
+                f"▪️ Selesai: `{end_h:02d}:00` WIB\n\n"
+                f"_Untuk mengubah, ketik:_\n"
+                f"`/setjam [mulai] [selesai]`\n"
+                f"_Contoh: /setjam 7 22_"
+            )
+            return
+        try:
+            new_start = int(parts[1])
+            new_end = int(parts[2]) if len(parts) > 2 else get_trading_hours()[1]
+            if new_start < 0 or new_start > 23 or new_end < 0 or new_end > 23:
+                send_telegram_notification("⚠️ *Jam tidak valid.* Harus antara 0-23.")
+                return
+            if new_start >= new_end:
+                send_telegram_notification("⚠️ *Jam mulai harus lebih kecil dari jam selesai.*")
+                return
+            if save_trading_hours(new_start, new_end):
+                send_telegram_notification(
+                    f"✅ *Jam Trading berhasil diubah!*\n"
+                    f"⏰ *Mulai:* `{new_start:02d}:00` WIB\n"
+                    f"⏰ *Selesai:* `{new_end:02d}:00` WIB"
+                )
+                logger.info(f"Jam trading diubah ke: {new_start:02d}:00 - {new_end:02d}:00 WIB")
+            else:
+                send_telegram_notification("❌ Gagal menyimpan jam trading baru.")
+        except (ValueError, IndexError):
+            send_telegram_notification("⚠️ *Format salah.*\n_Contoh: /setjam 7 22_")
+
     elif command == "/journal":
         if not mt5_executor.initialize_mt5():
             send_telegram_notification("❌ Gagal terhubung ke MT5 untuk membaca jurnal.")
             return
             
-        # Ambil transaksi 3 hari terakhir untuk cadangan history
+        # Ambil transaksi 3 hari terakhir
         from datetime import datetime
+        from config import MT5_MAGIC_NUMBER
         start_date = datetime.now() - timedelta(days=3)
-        deals = mt5_executor.mt5.history_deals_get(start_date, datetime.now())
+        end_date = datetime.now() + timedelta(days=1)
+        deals = mt5_executor.mt5.history_deals_get(start_date, end_date)
         
         if not deals:
             send_telegram_notification("📂 *Jurnal Kosong:* Tidak ada transaksi tercatat dalam 3 hari terakhir.")
             return
+        
+        # Filter: hanya deal CLOSE (entry==1) dari bot ini (magic number)
+        closed_deals = [d for d in deals if d.entry == 1 and d.magic == MT5_MAGIC_NUMBER]
+        
+        if not closed_deals:
+            send_telegram_notification("📂 *Jurnal Kosong:* Belum ada trade dari bot XAUGOLD 3 dalam 3 hari terakhir.")
+            return
             
         # Ambil 5 deal terakhir
-        deals = list(deals)[-5:]
-        deals.reverse() # Urutkan dari yang paling baru
+        closed_deals = list(closed_deals)[-5:]
+        closed_deals.reverse() # Urutkan dari yang paling baru
         
-        journal_text = "📋 *JURNAL TRADE (5 Transaksi Terakhir):*\n\n"
-        for d in deals:
-            deal_time = datetime.fromtimestamp(d.time, tz=timezone.utc) + timedelta(hours=7)
-            time_str = deal_time.strftime('%H:%M:%S WIB')
+        journal_text = "📋 *JURNAL TRADE BOT (5 Terakhir):*\n\n"
+        for d in closed_deals:
+            deal_time = datetime.fromtimestamp(d.time) - timedelta(hours=3)
+            time_str = deal_time.strftime('%d/%m %H:%M WIB')
             
-            # Tentukan tipe transaksi
-            # entry: 0=IN (open), 1=OUT (close). type: 0=Buy, 1=Sell
-            direction = "BUY" if d.type == 0 else "SELL"
-            action_type = "OPEN" if d.entry == 0 else "CLOSE"
+            # Arah posisi: deal OUT berlawanan dengan posisi asal
+            pos_direction = "BUY" if d.type == 1 else "SELL"
             
             profit = d.profit + d.swap + d.commission
             profit_str = f"+${profit:.2f} 🟢" if profit > 0 else (f"-${abs(profit):.2f} 🔴" if profit < 0 else "$0.00 ⚪")
             
+            # Alasan close
+            reason = "Manual ⚪"
+            if d.reason == 4:
+                reason = "SL 🔴"
+            elif d.reason == 5:
+                reason = "TP 🟢"
+            
             journal_text += (
-                f"⏱️ *{time_str}* | {d.symbol}\n"
-                f"▪️ *Tipe:* {direction} ({action_type})\n"
-                f"▪️ *Lot:* {d.volume:.3f} | *Harga:* {d.price}\n"
-                f"▪️ *P/L:* {profit_str if action_type == 'CLOSE' else 'Active'}\n"
+                f"⏱️ *{time_str}*\n"
+                f"▪️ *{pos_direction}* {d.volume:.2f} lot | Exit: {d.price}\n"
+                f"▪️ {reason} | *P/L:* {profit_str}\n"
                 f"-----------------------------------\n"
             )
             
@@ -567,21 +988,35 @@ def process_telegram_command(text):
 # =====================================================================
 
 def get_live_market_data():
-    """Helper: Ambil data pasar terkini dan analisis SMC."""
+    """Helper: Ambil data pasar terkini dan analisis ICT M5 (FVG + bias)."""
     try:
-        data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=1500, range_val=1500)
+        data = fetch_xauusd_data(symbol="FOREXCOM:XAUUSD", timeframe="5", limit=500, range_val=500)
         if 'error' in data or not data.get('candles'):
             return None
         candles = data['candles']
         latest = candles[-1]
-        smc = analyze_smc(candles)
+        
+        # M5 analysis
+        m5_bias = 'neutral'
+        active_fvgs = []
+        if len(candles) >= 30:
+            smc_m5 = analyze_smc(candles)
+            m5_bias = smc_m5.get('market_bias', 'neutral')
+            active_fvgs = smc_m5.get('active_fvgs', [])
+        
+        # ATR M5
+        atr_m5 = latest.get('atr_14')
+        if not atr_m5 and len(candles) >= 14:
+            recent_ranges = [c['high'] - c['low'] for c in candles[-14:]]
+            atr_m5 = sum(recent_ranges) / len(recent_ranges)
+        
         return {
             "price": latest['close'],
             "rsi": latest.get('rsi_14'),
             "ema_200": latest.get('ema_200'),
-            "atr": latest.get('atr_14'),
-            "bias": smc.get('market_bias', 'neutral'),
-            "active_obs": smc.get('active_order_blocks', []),
+            "atr_m5": atr_m5,
+            "bias": m5_bias,
+            "active_fvgs": active_fvgs,
         }
     except Exception as e:
         logger.error(f"Error fetching market data for interactive: {e}")
@@ -596,7 +1031,8 @@ def answer_market_condition():
         send_telegram_notification("❌ Gagal mengambil data pasar dari TradingView.")
         return
 
-    price, rsi, ema, atr, bias = market["price"], market["rsi"], market["ema_200"], market["atr"], market["bias"]
+    price, rsi, ema, bias = market["price"], market["rsi"], market["ema_200"], market["bias"]
+    atr_m5 = market.get("atr_m5")
     bias_icon = "🟢" if bias == "bullish" else "🔴" if bias == "bearish" else "⚪"
 
     rsi_status = "N/A"
@@ -605,56 +1041,59 @@ def answer_market_condition():
 
     ema_status = f"Harga {'DI ATAS' if price > ema else 'DI BAWAH'} EMA 200 ({ema:.2f})" if ema else "N/A"
 
-    obs = market["active_obs"]
-    ob_details = ""
-    for ob in obs:
-        ob_type = "🟢 Bullish" if ob['type'] == 'bullish_ob' else "🔴 Bearish"
-        dist = abs(price - (ob['high'] + ob['low']) / 2)
-        ob_details += f"\n   {ob_type}: {ob['low']:.2f} - {ob['high']:.2f} (jarak: {dist:.2f})"
+    fvgs = market["active_fvgs"]
+    fvg_details = ""
+    for fvg in fvgs:
+        fvg_type = "🟢 Bullish" if fvg['type'] == 'bullish_fvg' else "🔴 Bearish"
+        dist = abs(price - (fvg['high'] + fvg['low']) / 2)
+        fvg_details += f"\n   {fvg_type}: {fvg['low']:.2f} - {fvg['high']:.2f} (gap={fvg['gap_size']:.2f}, jarak={dist:.2f})"
+
+    atr_line = f"📏 *ATR M5:* {atr_m5:.2f}\n" if atr_m5 else ""
 
     msg = (
         f"📊 *KONDISI MARKET XAUUSD:*\n\n"
         f"💰 *Harga:* {price:.2f}\n"
-        f"{bias_icon} *Market Bias:* {bias.upper()}\n"
-        f"📏 *ATR(14):* {atr:.2f}\n"
+        f"{bias_icon} *Market Bias (M5):* {bias.upper()}\n"
+        f"{atr_line}"
         f"📊 *RSI(14):* {rsi:.2f} ({rsi_status})\n"
         f"📈 *EMA 200:* {ema_status}\n\n"
-        f"🧱 *Order Block Aktif:* {len(obs)}{ob_details}"
+        f"🟦 *FVG Aktif (M5):* {len(fvgs)}{fvg_details}"
     )
     send_telegram_notification(msg)
 
 
 def answer_order_blocks():
-    """Jawab pertanyaan tentang zona Order Block aktif."""
-    send_telegram_notification("⏳ Menganalisis Order Block...")
+    """Jawab pertanyaan tentang zona FVG aktif."""
+    send_telegram_notification("⏳ Menganalisis FVG M5...")
     market = get_live_market_data()
     if not market:
         send_telegram_notification("❌ Gagal mengambil data pasar.")
         return
 
-    obs, price = market["active_obs"], market["price"]
-    if not obs:
+    fvgs, price = market["active_fvgs"], market["price"]
+    if not fvgs:
         send_telegram_notification(
-            f"🧱 *ORDER BLOCK AKTIF:*\n\n"
+            f"🟦 *FVG AKTIF (M5):*\n\n"
             f"💰 Harga saat ini: {price:.2f}\n"
-            f"⚪ Tidak ada Order Block aktif. Bot menunggu zona OB baru terbentuk."
+            f"⚪ Tidak ada FVG aktif. Bot menunggu FVG baru terbentuk."
         )
         return
 
-    msg = f"🧱 *ORDER BLOCK AKTIF:*\n\n💰 Harga saat ini: *{price:.2f}*\n"
-    for i, ob in enumerate(obs):
-        ob_type = "🟢 Bullish OB" if ob['type'] == 'bullish_ob' else "🔴 Bearish OB"
-        mid = (ob['high'] + ob['low']) / 2
+    msg = f"🟦 *FVG AKTIF (M5):*\n\n💰 Harga saat ini: *{price:.2f}*\n"
+    for i, fvg in enumerate(fvgs):
+        fvg_type = "🟢 Bullish FVG" if fvg['type'] == 'bullish_fvg' else "🔴 Bearish FVG"
+        mid = (fvg['high'] + fvg['low']) / 2
         dist = abs(price - mid)
 
-        if ob['type'] == 'bullish_ob':
-            action = "Harga sudah di zona!" if ob['low'] <= price <= ob['high'] else f"Harga perlu TURUN {price - ob['high']:.2f}" if price > ob['high'] else f"Harga di bawah zona"
+        if fvg['type'] == 'bullish_fvg':
+            action = "Harga di zona FVG!" if fvg['low'] <= price <= fvg['high'] else f"Harga perlu TURUN {price - fvg['high']:.2f}" if price > fvg['high'] else "Harga di bawah zona"
         else:
-            action = "Harga sudah di zona!" if ob['low'] <= price <= ob['high'] else f"Harga perlu NAIK {ob['low'] - price:.2f}" if price < ob['low'] else f"Harga di atas zona"
+            action = "Harga di zona FVG!" if fvg['low'] <= price <= fvg['high'] else f"Harga perlu NAIK {fvg['low'] - price:.2f}" if price < fvg['low'] else "Harga di atas zona"
 
         msg += (
-            f"\n{ob_type} #{i+1}:\n"
-            f"   📍 Zona: {ob['low']:.2f} - {ob['high']:.2f}\n"
+            f"\n{fvg_type} #{i+1}:\n"
+            f"   📍 Zona: {fvg['low']:.2f} - {fvg['high']:.2f}\n"
+            f"   📏 Gap: {fvg['gap_size']:.2f}\n"
             f"   📏 Jarak: {dist:.2f}\n"
             f"   💡 {action}\n"
         )
@@ -670,14 +1109,14 @@ def answer_entry_conditions():
         return
 
     price, ema, rsi, bias = market["price"], market["ema_200"], market["rsi"], market["bias"]
-    obs = market["active_obs"]
     blockers, opportunities = [], []
 
     # Jam trading
+    s_h, e_h = get_trading_hours()
     if not is_trading_hour():
-        blockers.append("⏰ Di luar jam trading (08:00-19:00 WIB)")
+        blockers.append(f"⏰ Di luar jam trading ({s_h:02d}:00-{e_h:02d}:00 WIB)")
     else:
-        opportunities.append("✅ Dalam jam trading aktif")
+        opportunities.append(f"✅ Dalam jam trading aktif ({s_h:02d}:00-{e_h:02d}:00)")
 
     # Daily loss limit
     daily_limit = get_daily_loss_limit()
@@ -689,41 +1128,30 @@ def answer_entry_conditions():
     if len(active_pos) > 0:
         blockers.append(f"⏳ Ada {len(active_pos)} posisi aktif berjalan")
 
-    # OB analysis
-    if not obs:
-        blockers.append("🧱 Tidak ada Order Block aktif")
+    # FVG analysis
+    fvgs = market.get("active_fvgs", [])
+    if not fvgs:
+        blockers.append("🟦 Tidak ada FVG M5 aktif")
     else:
-        for ob in obs:
-            if ob['type'] == 'bullish_ob':
-                near = price <= ob['high'] and price >= ob['low']
-                ok_ema = ema and price > ema
-                ok_rsi = rsi and rsi <= 70
-                ok_bias = bias in ('bullish', 'neutral')
-                if near and ok_ema and ok_rsi and ok_bias:
-                    opportunities.append(f"🟢 BUY siap! OB {ob['low']:.2f}-{ob['high']:.2f}")
+        for fvg in fvgs:
+            if fvg['type'] == 'bullish_fvg':
+                near = fvg['low'] <= price <= fvg['high']
+                ok_bias = bias == 'bullish'
+                if near and ok_bias:
+                    opportunities.append(f"🟢 BUY siap! FVG {fvg['low']:.2f}-{fvg['high']:.2f}")
                 else:
                     if not near:
-                        blockers.append(f"📏 Harga belum di Bullish OB ({ob['low']:.2f}-{ob['high']:.2f})")
-                    if not ok_ema:
-                        blockers.append(f"📉 Harga di bawah EMA 200 → BUY diblokir")
-                    if rsi and not ok_rsi:
-                        blockers.append(f"⚠️ RSI {rsi:.1f} > 70 (Overbought) → BUY diblokir")
+                        blockers.append(f"📏 Harga belum di Bullish FVG ({fvg['low']:.2f}-{fvg['high']:.2f})")
                     if not ok_bias:
                         blockers.append(f"🔴 Bias {bias} → BUY tidak diizinkan")
-            elif ob['type'] == 'bearish_ob':
-                near = price >= ob['low'] and price <= ob['high']
-                ok_ema = ema and price < ema
-                ok_rsi = rsi and rsi >= 30
-                ok_bias = bias in ('bearish', 'neutral')
-                if near and ok_ema and ok_rsi and ok_bias:
-                    opportunities.append(f"🔴 SELL siap! OB {ob['low']:.2f}-{ob['high']:.2f}")
+            elif fvg['type'] == 'bearish_fvg':
+                near = fvg['low'] <= price <= fvg['high']
+                ok_bias = bias == 'bearish'
+                if near and ok_bias:
+                    opportunities.append(f"🔴 SELL siap! FVG {fvg['low']:.2f}-{fvg['high']:.2f}")
                 else:
                     if not near:
-                        blockers.append(f"📏 Harga belum di Bearish OB ({ob['low']:.2f}-{ob['high']:.2f})")
-                    if not ok_ema:
-                        blockers.append(f"📈 Harga di atas EMA 200 → SELL diblokir")
-                    if rsi and not ok_rsi:
-                        blockers.append(f"⚠️ RSI {rsi:.1f} < 30 (Oversold) → SELL diblokir")
+                        blockers.append(f"📏 Harga belum di Bearish FVG ({fvg['low']:.2f}-{fvg['high']:.2f})")
                     if not ok_bias:
                         blockers.append(f"🟢 Bias {bias} → SELL tidak diizinkan")
 
@@ -761,7 +1189,7 @@ def answer_profit_today():
     total_profit, total_loss, win_count, loss_count = 0.0, 0.0, 0, 0
     for d in deals:
         if d.entry == 1:
-            deal_time = datetime.fromtimestamp(d.time, tz=timezone.utc) + timedelta(hours=7)
+            deal_time = datetime.fromtimestamp(d.time) - timedelta(hours=3)
             if deal_time.strftime('%Y-%m-%d') == date_str:
                 pnl = d.profit + d.swap + d.commission
                 if pnl > 0:
@@ -836,17 +1264,24 @@ def handle_interactive_question(text):
 
 def main():
     logger.info("=========================================================")
-    logger.info("🚀 MEMULAI AUTO-TRADING BOT XAUUSD SMC (MT5)")
+    logger.info("🚀 MEMULAI AUTO-TRADING BOT XAUUSD ICT FVG (MT5)")
     logger.info("=========================================================")
     
-    # Inisialisasi awal koneksi
-    if not mt5_executor.initialize_mt5():
-        logger.critical("Koneksi awal ke MT5 gagal. Pastikan aplikasi MT5 di Windows sudah menyala.")
-        sys.exit(1)
-        
-    # Jalankan background thread listener Telegram
+    # Jalankan background thread listener Telegram lebih dulu (bisa terima command walau MT5 belum nyala)
     listener_thread = threading.Thread(target=telegram_polling_thread, daemon=True)
     listener_thread.start()
+
+    # Retry loop: tunggu MT5 siap (untuk PM2 auto-start saat boot)
+    mt5_retry_interval = 30  # detik
+    mt5_connected = False
+    while not mt5_connected:
+        if mt5_executor.initialize_mt5():
+            mt5_connected = True
+            logger.info("✅ Koneksi MT5 berhasil!")
+        else:
+            logger.warning(f"⏳ MT5 belum siap. Retry dalam {mt5_retry_interval} detik... (Pastikan MetaTrader 5 sudah menyala)")
+            send_telegram_notification(f"⏳ *Bot menunggu MetaTrader 5...*\nRetry dalam {mt5_retry_interval} detik.")
+            time.sleep(mt5_retry_interval)
 
     # Ambil nilai awal
     current_lot = get_lot_size()
@@ -855,7 +1290,7 @@ def main():
     # Kirim notifikasi bot aktif ke Telegram
     wib_start = datetime.now(timezone.utc) + timedelta(hours=7)
     send_telegram_notification(
-        f"🤖 *Auto-Trading SMC Bot Aktif!*\n"
+        f"🤖 *Auto-Trading ICT FVG Bot Aktif!*\n"
         f"🕒 *Waktu Mulai:* {wib_start.strftime('%d-%m-%Y %H:%M:%S WIB')}\n"
         f"💰 *Modal Terdeteksi:* ${mt5_executor.mt5.account_info().balance if mt5_executor.mt5.account_info() else 'N/A'}\n"
         f"⚙️ *Lot Size:* `{current_lot:.3f} lot`\n"
@@ -868,7 +1303,7 @@ def main():
             run_trading_cycle()
         except KeyboardInterrupt:
             logger.info("👋 Bot dihentikan secara manual.")
-            send_telegram_notification("⚠️ *SMC Gold Bot dimatikan secara manual.*")
+            send_telegram_notification("⚠️ *ICT Gold Bot dimatikan secara manual.*")
             break
         except Exception as e:
             logger.exception(f"Error tidak terduga pada trading loop: {e}")
