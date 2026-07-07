@@ -51,7 +51,17 @@ state = {
     "last_closed_deal_ticket": 0,  # Melacak tiket transaksi terluar untuk hitung rugi
     "active_tickets": [],          # Menyimpan ID tiket posisi bot yang sedang berjalan
     "paused": False,               # Pause entry baru via /pause, posisi aktif tetap dimonitor
+    "profit_lock_triggered": set(), # Tiket posisi yang sudah di-lock profit (SL sudah digeser)
 }
+
+# ─── Konfigurasi Profit Lock ───────────────────────────────────────────────────
+# Saat profit mencapai PROFIT_LOCK_TRIGGER_PIPS, SL digeser ke entry + PROFIT_LOCK_SL_PIPS
+# Untuk XAUUSD: 1 pip = 10 poin (0.10), 1 poin = 0.01
+# 30 pips = 300 poin = 3.00 harga
+# 5 pips  = 50 poin  = 0.50 harga
+PROFIT_LOCK_TRIGGER_POINTS = 300  # 300 poin = 30 pips — trigger geser SL
+PROFIT_LOCK_SL_POINTS      = 50   # 50 poin = 5 pips  — SL baru di atas/bawah entry
+POINT_VALUE                = 0.01 # Nilai 1 point untuk XAUUSD
 
 def is_trading_hour():
     """
@@ -211,12 +221,99 @@ def monitor_closed_positions():
         if ticket in state["active_tickets"]:
             state["active_tickets"].remove(ticket)
 
+def check_profit_lock():
+    """
+    Memantau posisi aktif dan menggeser SL secara otomatis saat profit
+    mencapai PROFIT_LOCK_TRIGGER_POINTS (default: 300 poin / 30 pips).
+    SL baru dipasang di entry + PROFIT_LOCK_SL_POINTS (default: 50 poin / 5 pips)
+    untuk mengamankan profit minimum.
+    
+    Fungsi ini hanya menggeser SL satu kali per tiket (tidak berulang).
+    """
+    if not mt5_executor.initialize_mt5():
+        return
+
+    active_positions = mt5_executor.check_active_positions()
+    if not active_positions:
+        # Bersihkan tiket yang sudah tidak aktif dari profit_lock_triggered
+        state["profit_lock_triggered"].clear()
+        return
+
+    active_ticket_ids = {pos.ticket for pos in active_positions}
+    # Hapus tiket yang sudah tutup dari tracker
+    state["profit_lock_triggered"] = state["profit_lock_triggered"] & active_ticket_ids
+
+    trigger_price = PROFIT_LOCK_TRIGGER_POINTS * POINT_VALUE  # 300 * 0.01 = 3.00
+    sl_offset     = PROFIT_LOCK_SL_POINTS * POINT_VALUE       # 50  * 0.01 = 0.50
+
+    for pos in active_positions:
+        # Skip jika tiket ini sudah pernah di-lock
+        if pos.ticket in state["profit_lock_triggered"]:
+            continue
+
+        entry_price   = pos.price_open
+        current_price = pos.price_current
+        direction     = "BUY" if pos.type == 0 else "SELL"
+
+        # Hitung profit dalam poin dari harga entry
+        if pos.type == 0:  # BUY — harga harus naik
+            profit_points_move = current_price - entry_price
+            new_sl = round(entry_price + sl_offset, 2)
+            sl_sudah_lebih_baik = pos.sl >= new_sl  # SL sudah di atas target baru
+        else:              # SELL — harga harus turun
+            profit_points_move = entry_price - current_price
+            new_sl = round(entry_price - sl_offset, 2)
+            sl_sudah_lebih_baik = pos.sl > 0 and pos.sl <= new_sl  # SL sudah di bawah target baru
+
+        # Cek apakah profit sudah mencapai trigger
+        if profit_points_move < trigger_price:
+            logger.info(
+                f"[ProfitLock] #{pos.ticket} ({direction}) | "
+                f"Profit move: {profit_points_move:.2f} / {trigger_price:.2f} — belum trigger"
+            )
+            continue
+
+        # Skip jika SL sudah lebih baik dari target (sudah digeser manual/sebelumnya)
+        if sl_sudah_lebih_baik:
+            logger.info(
+                f"[ProfitLock] #{pos.ticket} ({direction}) | "
+                f"SL sudah di posisi lebih baik ({pos.sl}) dari target ({new_sl}), skip."
+            )
+            state["profit_lock_triggered"].add(pos.ticket)
+            continue
+
+        # Geser SL ke entry + offset
+        logger.info(
+            f"[ProfitLock] #{pos.ticket} ({direction}) | "
+            f"Profit {profit_points_move:.2f} poin >= trigger {trigger_price:.2f} poin. "
+            f"Geser SL dari {pos.sl} → {new_sl}"
+        )
+        if mt5_executor.modify_sl(pos, new_sl):
+            state["profit_lock_triggered"].add(pos.ticket)
+            pnl = pos.profit + pos.swap + pos.commission
+            send_telegram_notification(
+                f"🔒 *PROFIT LOCK AKTIF!*\n\n"
+                f"🆔 *Tiket:* #{pos.ticket}\n"
+                f"📈 *Arah:* {direction}\n"
+                f"💵 *Entry:* `{entry_price:.2f}`\n"
+                f"📍 *Harga Sekarang:* `{current_price:.2f}`\n"
+                f"✅ *SL Baru:* `{new_sl:.2f}` (+{PROFIT_LOCK_SL_POINTS} poin dari entry)\n"
+                f"📊 *Floating P/L:* `${pnl:.2f}`\n"
+                f"_Profit {PROFIT_LOCK_TRIGGER_POINTS} poin tercapai — SL diamankan._"
+            )
+        else:
+            logger.error(f"[ProfitLock] Gagal menggeser SL posisi #{pos.ticket}")
+
+
 def run_trading_cycle():
     """
     Satu siklus scan market, deteksi sinyal, dan eksekusi MT5.
     """
     # 1. Pantau penutupan posisi aktif bot
     monitor_closed_positions()
+
+    # 1b. Cek & terapkan Profit Lock otomatis pada posisi yang sedang berjalan
+    check_profit_lock()
 
     # 2. Update status kerugian harian berjalan
     update_daily_losses()
