@@ -124,12 +124,12 @@ def open_trade(direction, entry_price, sl, tp, reason=""):
 
 def check_active_positions():
     """
-    Mengambil daftar posisi aktif yang dibuka oleh bot (menggunakan magic number).
+    Mengambil daftar posisi aktif pada simbol bot (baik dari bot maupun manual).
     """
     if not initialize_mt5():
         return []
     
-    positions = mt5.positions_get(magic=MT5_MAGIC_NUMBER)
+    positions = mt5.positions_get(symbol=MT5_SYMBOL)
     if positions is None:
         return []
     return list(positions)
