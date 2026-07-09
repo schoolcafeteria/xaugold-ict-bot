@@ -19,35 +19,28 @@ import mt5_executor
 # =====================================================================
 # INSTANCE LOCK — Pastikan hanya 1 bot yang berjalan sekaligus
 # =====================================================================
-_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_trader.pid")
+_LOCK_SOCKET = None
+_LOCK_PORT   = 47777  # Port unik khusus untuk lock bot ini
 
 def _check_single_instance():
     """Cek apakah sudah ada instance bot yang berjalan. Jika ya, keluar."""
-    if os.path.exists(_LOCK_FILE):
-        try:
-            with open(_LOCK_FILE, "r") as f:
-                existing_pid = int(f.read().strip())
-            # Cek apakah PID tersebut benar-benar masih berjalan
-            import psutil
-            if psutil.pid_exists(existing_pid):
-                proc = psutil.Process(existing_pid)
-                # Pastikan proses itu memang live_trader.py (bukan PID daur ulang)
-                cmdline = " ".join(proc.cmdline())
-                if "live_trader" in cmdline:
-                    print(f"[INSTANCE LOCK] Bot sudah berjalan (PID {existing_pid}). Instance ini dihentikan.")
-                    sys.exit(0)
-        except Exception:
-            pass  # PID file rusak atau proses tidak valid, lanjutkan saja
-
-    # Tulis PID kita sendiri ke lock file
-    with open(_LOCK_FILE, "w") as f:
-        f.write(str(os.getpid()))
+    global _LOCK_SOCKET
+    import socket
+    _LOCK_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _LOCK_SOCKET.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+    try:
+        _LOCK_SOCKET.bind(('127.0.0.1', _LOCK_PORT))
+        # Berhasil bind → kita adalah satu-satunya instance
+    except OSError:
+        print(f"[INSTANCE LOCK] Bot sudah berjalan di port {_LOCK_PORT}. Instance ini dihentikan.")
+        sys.exit(0)
 
 def _release_lock():
-    """Hapus lock file saat bot berhenti."""
+    """Lepas lock socket saat bot berhenti."""
+    global _LOCK_SOCKET
     try:
-        if os.path.exists(_LOCK_FILE):
-            os.remove(_LOCK_FILE)
+        if _LOCK_SOCKET:
+            _LOCK_SOCKET.close()
     except Exception:
         pass
 
