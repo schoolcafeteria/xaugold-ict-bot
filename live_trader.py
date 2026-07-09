@@ -1,5 +1,6 @@
 import time
 import sys
+import os
 import logging
 import threading
 import requests
@@ -14,6 +15,45 @@ from config import (
 from tradingview_tool import fetch_xauusd_data
 from smc_local import analyze_smc
 import mt5_executor
+
+# =====================================================================
+# INSTANCE LOCK — Pastikan hanya 1 bot yang berjalan sekaligus
+# =====================================================================
+_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_trader.pid")
+
+def _check_single_instance():
+    """Cek apakah sudah ada instance bot yang berjalan. Jika ya, keluar."""
+    if os.path.exists(_LOCK_FILE):
+        try:
+            with open(_LOCK_FILE, "r") as f:
+                existing_pid = int(f.read().strip())
+            # Cek apakah PID tersebut benar-benar masih berjalan
+            import psutil
+            if psutil.pid_exists(existing_pid):
+                proc = psutil.Process(existing_pid)
+                # Pastikan proses itu memang live_trader.py (bukan PID daur ulang)
+                cmdline = " ".join(proc.cmdline())
+                if "live_trader" in cmdline:
+                    print(f"[INSTANCE LOCK] Bot sudah berjalan (PID {existing_pid}). Instance ini dihentikan.")
+                    sys.exit(0)
+        except Exception:
+            pass  # PID file rusak atau proses tidak valid, lanjutkan saja
+
+    # Tulis PID kita sendiri ke lock file
+    with open(_LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+def _release_lock():
+    """Hapus lock file saat bot berhenti."""
+    try:
+        if os.path.exists(_LOCK_FILE):
+            os.remove(_LOCK_FILE)
+    except Exception:
+        pass
+
+import atexit
+_check_single_instance()
+atexit.register(_release_lock)
 from telegram_notifier import (
     send_telegram_notification,
     send_telegram_with_keyboard,
