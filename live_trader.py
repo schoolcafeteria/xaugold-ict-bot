@@ -331,10 +331,6 @@ def run_trading_cycle():
 
     current_loss_limit = get_daily_loss_limit()
 
-    # 3. Cek apakah bot sedang di-pause
-    if state["paused"]:
-        return
-
     # 4. Cek filter Daily Loss Limit
     if state["daily_loss"] >= current_loss_limit:
         logger.warning(f"⚠️ Batas kerugian harian tercapai: ${state['daily_loss']} >= ${current_loss_limit}. Auto-trade dinonaktifkan untuk sisa hari ini.")
@@ -452,20 +448,35 @@ def run_trading_cycle():
     # 9. Kirim order ke MetaTrader 5
     if entry_direction:
         logger.info(f"🎯 SINYAL TERDETEKSI: {entry_direction.upper()} | {reason_msg}")
-        order_res = mt5_executor.open_trade(
-            direction=entry_direction,
-            entry_price=current_price,
-            sl=sl_level,
-            tp=tp_level,
-            reason=reason_msg
-        )
-        if order_res:
-            logger.info("Order otomatis berhasil dipasang di MT5.")
-            # Ambil position ticket (bisa .position atau .order tergantung versi MT5)
-            ticket = getattr(order_res, 'position', None) or getattr(order_res, 'order', None) or getattr(order_res, 'deal', None)
-            if ticket:
-                state["active_tickets"].append(ticket)
-                logger.info(f"Ticket #{ticket} ditambahkan ke active_tickets.")
+        
+        if state["paused"]:
+            # Jika bot di-pause, hanya kirim notifikasi sinyal ke Telegram tanpa eksekusi MT5
+            msg = (
+                f"📡 *SINYAL TERDETEKSI (PAUSED — HANYA NOTIFIKASI)*\n\n"
+                f"📈 *Arah:* {entry_direction.upper()}\n"
+                f"💵 *Entry:* `{current_price:.2f}`\n"
+                f"🛑 *Stop Loss:* `{sl_level:.2f}`\n"
+                f"🎯 *Take Profit:* `{tp_level:.2f}`\n"
+                f"💬 *Alasan:* {reason_msg}\n\n"
+                f"_Bot tidak membuka posisi ke MT5 karena sedang dalam status PAUSE._"
+            )
+            send_telegram_notification(msg)
+            logger.info(f"Sinyal {entry_direction.upper()} terdeteksi saat paused. Notifikasi terkirim.")
+        else:
+            order_res = mt5_executor.open_trade(
+                direction=entry_direction,
+                entry_price=current_price,
+                sl=sl_level,
+                tp=tp_level,
+                reason=reason_msg
+            )
+            if order_res:
+                logger.info("Order otomatis berhasil dipasang di MT5.")
+                # Ambil position ticket (bisa .position atau .order tergantung versi MT5)
+                ticket = getattr(order_res, 'position', None) or getattr(order_res, 'order', None) or getattr(order_res, 'deal', None)
+                if ticket:
+                    state["active_tickets"].append(ticket)
+                    logger.info(f"Ticket #{ticket} ditambahkan ke active_tickets.")
         
     state["processed_bars"].add(candle_time)
 
@@ -635,9 +646,9 @@ def process_callback(cb_data, cb_id, msg_id):
         edit_telegram_message(
             msg_id,
             "⏸️ *BOT TRADING DI-PAUSE!*\n\n"
-            "🔹 Entry baru: *DIHENTIKAN*\n"
-            "🔹 Posisi aktif: *Tetap dimonitor*\n"
-            "🔹 Notifikasi TP/SL: *Tetap aktif*",
+            "🔹 Eksekusi MT5: *DIHENTIKAN*\n"
+            "🔹 Notifikasi Sinyal: *AKTIF (Hanya Kirim Chat)*\n"
+            "🔹 Posisi Aktif & Profit Lock: *TETAP JALAN*",
             build_main_menu_keyboard()
         )
         return
@@ -753,9 +764,9 @@ def process_telegram_command(text):
             logger.info("Bot di-PAUSE via Telegram.")
             send_telegram_notification(
                 "⏸️ *BOT TRADING DI-PAUSE!*\n\n"
-                "🔹 Entry baru: *DIHENTIKAN*\n"
-                "🔹 Posisi aktif: *Tetap dimonitor*\n"
-                "🔹 Notifikasi TP/SL: *Tetap aktif*\n\n"
+                "🔹 Eksekusi MT5: *DIHENTIKAN*\n"
+                "🔹 Notifikasi Sinyal: *AKTIF (Hanya Kirim Chat)*\n"
+                "🔹 Posisi Aktif & Profit Lock: *TETAP JALAN*\n\n"
                 "Ketik `/resume` untuk melanjutkan trading."
             )
 
