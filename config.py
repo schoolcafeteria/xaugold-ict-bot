@@ -66,3 +66,12 @@ def get_trading_hours():
 
 def save_trading_hours(start, end):
     return save_settings({"trading_start_hour": start, "trading_end_hour": end})
+
+def get_paused():
+    """Baca status pause dari settings.json agar persistent setelah restart."""
+    settings = load_settings()
+    return bool(settings.get("paused", False))
+
+def save_paused(paused: bool):
+    """Simpan status pause ke settings.json."""
+    return save_settings({"paused": paused})

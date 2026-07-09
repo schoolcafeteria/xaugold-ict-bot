@@ -10,7 +10,8 @@ from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     get_lot_size, save_lot_size,
     get_daily_loss_limit, save_daily_loss_limit,
-    get_trading_hours, save_trading_hours
+    get_trading_hours, save_trading_hours,
+    get_paused, save_paused
 )
 from tradingview_tool import fetch_xauusd_data
 from smc_local import analyze_smc
@@ -83,7 +84,7 @@ state = {
     "processed_bars": set(),       # Bar timestamps yang sudah dianalisis entry-nya
     "last_closed_deal_ticket": 0,  # Melacak tiket transaksi terluar untuk hitung rugi
     "active_tickets": [],          # Menyimpan ID tiket posisi bot yang sedang berjalan
-    "paused": False,               # Pause entry baru via /pause, posisi aktif tetap dimonitor
+    "paused": get_paused(),         # Pause entry baru via /pause, persistent setelah restart
     "profit_lock_triggered": set(), # Tiket posisi yang sudah di-lock profit (SL sudah digeser)
 }
 
@@ -675,6 +676,7 @@ def process_callback(cb_data, cb_id, msg_id):
     if cb_data == "act_pause":
         answer_callback_query(cb_id, "⏸️ Bot di-pause!")
         state["paused"] = True
+        save_paused(True)
         logger.info("Bot di-PAUSE via menu Telegram.")
         edit_telegram_message(
             msg_id,
@@ -689,6 +691,7 @@ def process_callback(cb_data, cb_id, msg_id):
     if cb_data == "act_resume":
         answer_callback_query(cb_id, "▶️ Bot dilanjutkan!")
         state["paused"] = False
+        save_paused(False)
         logger.info("Bot di-RESUME via menu Telegram.")
         edit_telegram_message(
             msg_id,
@@ -794,6 +797,7 @@ def process_telegram_command(text):
             send_telegram_notification("⏸️ Bot sudah dalam status *PAUSED*. Ketik `/resume` untuk melanjutkan.")
         else:
             state["paused"] = True
+            save_paused(True)
             logger.info("Bot di-PAUSE via Telegram.")
             send_telegram_notification(
                 "⏸️ *BOT TRADING DI-PAUSE!*\n\n"
@@ -808,6 +812,7 @@ def process_telegram_command(text):
             send_telegram_notification("🟢 Bot sudah dalam status *AKTIF*. Tidak perlu resume.")
         else:
             state["paused"] = False
+            save_paused(False)
             logger.info("Bot di-RESUME via Telegram.")
             send_telegram_notification(
                 "▶️ *BOT TRADING DILANJUTKAN!*\n\n"
