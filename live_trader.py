@@ -305,15 +305,26 @@ def check_profit_lock():
             logger.error(f"[ProfitLock] Gagal menggeser SL posisi #{pos.ticket}")
 
 
+def profit_lock_thread():
+    """
+    Thread background khusus untuk memantau Profit Lock setiap 1 detik.
+    Lebih responsif dibanding menunggu siklus scan 15 detik.
+    """
+    logger.info("🔒 Profit Lock thread aktif (scan tiap 1 detik).")
+    while True:
+        try:
+            check_profit_lock()
+        except Exception as e:
+            logger.error(f"Error pada profit_lock_thread: {e}")
+        time.sleep(1)
+
+
 def run_trading_cycle():
     """
     Satu siklus scan market, deteksi sinyal, dan eksekusi MT5.
     """
     # 1. Pantau penutupan posisi aktif bot
     monitor_closed_positions()
-
-    # 1b. Cek & terapkan Profit Lock otomatis pada posisi yang sedang berjalan
-    check_profit_lock()
 
     # 2. Update status kerugian harian berjalan
     update_daily_losses()
@@ -1410,6 +1421,10 @@ def main():
     # Jalankan background thread listener Telegram lebih dulu (bisa terima command walau MT5 belum nyala)
     listener_thread = threading.Thread(target=telegram_polling_thread, daemon=True)
     listener_thread.start()
+
+    # Jalankan Profit Lock thread — scan tiap 1 detik (independent dari loop utama)
+    pl_thread = threading.Thread(target=profit_lock_thread, daemon=True)
+    pl_thread.start()
 
     # Retry loop: tunggu MT5 siap (untuk PM2 auto-start saat boot)
     mt5_retry_interval = 30  # detik
