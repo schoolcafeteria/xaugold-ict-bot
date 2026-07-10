@@ -92,9 +92,9 @@ state = {
 # Saat profit mencapai PROFIT_LOCK_TRIGGER_PIPS, SL digeser ke entry + PROFIT_LOCK_SL_PIPS
 # Untuk XAUUSD: 1 pip = 10 poin (0.10), 1 poin = 0.01
 # 30 pips = 300 poin = 3.00 harga
-# 5 pips  = 50 poin  = 0.50 harga
+# 2 pips  = 20 poin  = 0.20 harga
 PROFIT_LOCK_TRIGGER_POINTS = 300  # 300 poin = 30 pips — trigger geser SL
-PROFIT_LOCK_SL_POINTS      = 50   # 50 poin = 5 pips  — SL baru di atas/bawah entry
+PROFIT_LOCK_SL_POINTS      = 20   # 20 poin = 2 pips  — SL baru di atas/bawah entry
 POINT_VALUE                = 0.01 # Nilai 1 point untuk XAUUSD
 
 def is_trading_hour():
